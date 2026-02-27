@@ -61,6 +61,7 @@ import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, sep } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
+import { stripBom } from "../utils/jsonl.js";
 
 /** Check if a path is absolute (works for both Unix and Windows paths). */
 export function isAbsolutePath(p: string): boolean {
@@ -190,11 +191,7 @@ export async function readCwdFromSessionFile(
     const { bytesRead } = await fd.read(buf, 0, 8192, 0);
     if (bytesRead === 0) return null;
 
-    let content = buf.toString("utf-8", 0, bytesRead);
-    // Strip UTF-8 BOM if present (common on Windows)
-    if (content.charCodeAt(0) === 0xfeff) {
-      content = content.slice(1);
-    }
+    const content = stripBom(buf.toString("utf-8", 0, bytesRead));
     const lines = content.split("\n").slice(0, 20);
 
     for (const line of lines) {

@@ -11,13 +11,13 @@
  * when multiple callers need session data in the same request cycle.
  */
 
-import { open } from "node:fs/promises";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, sep } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import type { Project } from "../supervisor/types.js";
+import { readFirstLine } from "../utils/jsonl.js";
 import { encodeProjectId } from "./paths.js";
 
 export const CODEX_SESSIONS_DIR =
@@ -49,14 +49,6 @@ export interface CodexScannerOptions {
 
 /** How long to cache scan results (ms) */
 const SCAN_CACHE_TTL = 5_000;
-
-/** Strip UTF-8 BOM if present (common on Windows) */
-function stripBom(str: string): string {
-  if (str.charCodeAt(0) === 0xfeff) {
-    return str.slice(1);
-  }
-  return str;
-}
 
 export class CodexSessionScanner {
   private sessionsDir: string;
@@ -229,26 +221,16 @@ export class CodexSessionScanner {
   private async readSessionMeta(
     filePath: string,
   ): Promise<CodexSessionInfo | null> {
-    let fd: Awaited<ReturnType<typeof open>> | null = null;
     try {
-      const stats = await stat(filePath);
+      const [stats, firstLine] = await Promise.all([
+        stat(filePath),
+        readFirstLine(filePath),
+      ]);
 
-      // Read only the first 4KB — session_meta is always the first line
-      fd = await open(filePath, "r");
-      const buf = Buffer.alloc(4096);
-      const { bytesRead } = await fd.read(buf, 0, 4096, 0);
-      if (bytesRead === 0) {
-        getLogger().debug(`[CodexScanner] Empty file: ${filePath}`);
-        return null;
-      }
-
-      const content = stripBom(buf.toString("utf-8", 0, bytesRead));
-      const firstNewline = content.indexOf("\n");
-      const firstLine =
-        firstNewline > 0 ? content.slice(0, firstNewline) : content;
-
-      if (!firstLine.trim()) {
-        getLogger().debug(`[CodexScanner] Empty first line: ${filePath}`);
+      if (!firstLine) {
+        getLogger().debug(
+          `[CodexScanner] Empty file or first line: ${filePath}`,
+        );
         return null;
       }
 
@@ -282,8 +264,6 @@ export class CodexSessionScanner {
         `[CodexScanner] Error reading ${filePath}: ${error instanceof Error ? error.message : error}`,
       );
       return null;
-    } finally {
-      await fd?.close();
     }
   }
 }

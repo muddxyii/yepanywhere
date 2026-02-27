@@ -11,7 +11,7 @@
  * Unlike Claude's DAG structure, Codex sessions are linear.
  */
 
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   type CodexEventMsgEntry,
@@ -36,19 +36,12 @@ import type {
   Session,
   SessionSummary,
 } from "../supervisor/types.js";
+import { readFirstLine, readJsonlLines } from "../utils/jsonl.js";
 import type {
   GetSessionOptions,
   ISessionReader,
   LoadedSession,
 } from "./types.js";
-
-/** Strip UTF-8 BOM if present (common on Windows) */
-function stripBom(str: string): string {
-  if (str.charCodeAt(0) === 0xfeff) {
-    return str.slice(1);
-  }
-  return str;
-}
 
 export interface CodexSessionReaderOptions {
   /**
@@ -125,12 +118,8 @@ export class CodexSessionReader implements ISessionReader {
     if (!sessionFile) return null;
 
     try {
-      const rawContent = await readFile(sessionFile.filePath, "utf-8");
-      const trimmed = stripBom(rawContent).trim();
-
-      if (!trimmed) return null;
-
-      const lines = trimmed.split("\n");
+      const lines = await readJsonlLines(sessionFile.filePath);
+      if (lines.length === 0 || (lines.length === 1 && !lines[0])) return null;
       const entries: CodexSessionEntry[] = [];
 
       for (const line of lines) {
@@ -203,8 +192,7 @@ export class CodexSessionReader implements ISessionReader {
     const sessionFile = await this.findSessionFile(sessionId);
     if (!sessionFile) return null;
 
-    const rawContent = await readFile(sessionFile.filePath, "utf-8");
-    const lines = stripBom(rawContent).trim().split("\n");
+    const lines = await readJsonlLines(sessionFile.filePath);
 
     const entries: CodexSessionEntry[] = [];
     for (const line of lines) {
@@ -355,22 +343,13 @@ export class CodexSessionReader implements ISessionReader {
   private async readSessionMeta(
     filePath: string,
   ): Promise<CodexSessionFile | null> {
-    let fd: Awaited<ReturnType<typeof open>> | null = null;
     try {
-      const stats = await stat(filePath);
+      const [stats, firstLine] = await Promise.all([
+        stat(filePath),
+        readFirstLine(filePath),
+      ]);
 
-      // Read only the first 4KB — session_meta is always the first line
-      fd = await open(filePath, "r");
-      const buf = Buffer.alloc(4096);
-      const { bytesRead } = await fd.read(buf, 0, 4096, 0);
-      if (bytesRead === 0) return null;
-
-      const content = stripBom(buf.toString("utf-8", 0, bytesRead));
-      const firstNewline = content.indexOf("\n");
-      const firstLine =
-        firstNewline > 0 ? content.slice(0, firstNewline) : content;
-
-      if (!firstLine.trim()) return null;
+      if (!firstLine) return null;
 
       const entry = parseCodexSessionEntry(firstLine);
       if (!entry || entry.type !== "session_meta") return null;
@@ -387,8 +366,6 @@ export class CodexSessionReader implements ISessionReader {
       };
     } catch {
       return null;
-    } finally {
-      await fd?.close();
     }
   }
 

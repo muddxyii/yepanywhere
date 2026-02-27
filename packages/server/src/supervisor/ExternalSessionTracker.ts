@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type DirProjectId,
@@ -7,6 +7,7 @@ import {
 } from "@yep-anywhere/shared";
 import { encodeProjectId } from "../projects/paths.js";
 import type { ProjectScanner } from "../projects/scanner.js";
+import { readFirstLine } from "../utils/jsonl.js";
 import { BatchProcessor } from "../watcher/BatchProcessor.js";
 import type {
   BusEvent,
@@ -474,16 +475,8 @@ export class ExternalSessionTracker {
     filePath: string,
   ): Promise<{ cwd: string; timestamp: string; model?: string } | null> {
     try {
-      let content = await readFile(filePath, { encoding: "utf-8" });
-      // Strip UTF-8 BOM if present (common on Windows)
-      if (content.charCodeAt(0) === 0xfeff) {
-        content = content.slice(1);
-      }
-      const firstNewline = content.indexOf("\n");
-      const firstLine =
-        firstNewline > 0 ? content.slice(0, firstNewline) : content;
-
-      if (!firstLine.trim()) return null;
+      const firstLine = await readFirstLine(filePath);
+      if (!firstLine) return null;
 
       const parsed = JSON.parse(firstLine) as {
         type?: string;
