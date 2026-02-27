@@ -20,6 +20,7 @@ import {
   SESSION_TITLE_MAX_LENGTH,
   type UnifiedSession,
   type UrlProjectId,
+  getGeminiUserMessageText,
   getModelContextWindow,
   parseGeminiSessionFile,
 } from "@yep-anywhere/shared";
@@ -299,17 +300,18 @@ export class GeminiSessionReader implements ISessionReader {
       return [];
     }
 
-    // Scan ~/.gemini/tmp/{projectHash}/chats/*.json
-    const projectHashDirs = await this.findProjectHashDirs();
+    // Scan ~/.gemini/tmp/{dirName}/chats/*.json
+    // dirName may be a slug (v0.29+) or a SHA-256 hash (older CLI)
+    const projectDirs = await this.findProjectDirs();
 
-    for (const { hashDir, projectHash } of projectHashDirs) {
-      const chatsDir = join(hashDir, "chats");
+    for (const { dir, dirName } of projectDirs) {
+      const chatsDir = join(dir, "chats");
       try {
         await stat(chatsDir);
         const files = await this.findSessionFiles(chatsDir);
 
         for (const filePath of files) {
-          const session = await this.readSessionMeta(filePath, projectHash);
+          const session = await this.readSessionMeta(filePath, dirName);
           if (session) {
             sessions.push(session);
             this.sessionFileCache.set(session.id, session);
@@ -325,12 +327,11 @@ export class GeminiSessionReader implements ISessionReader {
   }
 
   /**
-   * Find all project hash directories in ~/.gemini/tmp/
+   * Find all project directories in ~/.gemini/tmp/
+   * Directory names may be slugs (v0.29+) or SHA-256 hashes (older CLI).
    */
-  private async findProjectHashDirs(): Promise<
-    { hashDir: string; projectHash: string }[]
-  > {
-    const dirs: { hashDir: string; projectHash: string }[] = [];
+  private async findProjectDirs(): Promise<{ dir: string; dirName: string }[]> {
+    const dirs: { dir: string; dirName: string }[] = [];
 
     try {
       const entries = await readdir(this.sessionsDir, { withFileTypes: true });
@@ -338,8 +339,8 @@ export class GeminiSessionReader implements ISessionReader {
       for (const entry of entries) {
         if (entry.isDirectory()) {
           dirs.push({
-            hashDir: join(this.sessionsDir, entry.name),
-            projectHash: entry.name,
+            dir: join(this.sessionsDir, entry.name),
+            dirName: entry.name,
           });
         }
       }
@@ -395,7 +396,7 @@ export class GeminiSessionReader implements ISessionReader {
    */
   private async readSessionMeta(
     filePath: string,
-    projectHash: string,
+    _dirName: string,
   ): Promise<GeminiSessionCacheEntry | null> {
     try {
       const stats = await stat(filePath);
@@ -407,7 +408,9 @@ export class GeminiSessionReader implements ISessionReader {
       return {
         id: session.sessionId,
         filePath,
-        projectHash,
+        // Use projectHash from file content (SHA-256), not directory name.
+        // Gemini CLI ≥ v0.29 uses slug-based directory names instead of hashes.
+        projectHash: session.projectHash,
         startTime: session.startTime,
         mtime: stats.mtimeMs,
         size: stats.size,
@@ -428,7 +431,7 @@ export class GeminiSessionReader implements ISessionReader {
     for (const msg of messages) {
       if (msg.type === "user") {
         const userMsg = msg as GeminiUserMessage;
-        const fullTitle = userMsg.content.trim();
+        const fullTitle = getGeminiUserMessageText(userMsg.content).trim();
         const title =
           fullTitle.length <= SESSION_TITLE_MAX_LENGTH
             ? fullTitle

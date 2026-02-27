@@ -17,7 +17,11 @@ import type {
   OpenCodeStoredPart,
   UnifiedSession,
 } from "@yep-anywhere/shared";
-import { getMessageContent, isConversationEntry } from "@yep-anywhere/shared";
+import {
+  getGeminiUserMessageText,
+  getMessageContent,
+  isConversationEntry,
+} from "@yep-anywhere/shared";
 import type { ContentBlock, Message, Session } from "../supervisor/types.js";
 import {
   buildDag,
@@ -1372,7 +1376,7 @@ function convertGeminiMessages(
         type: "user",
         message: {
           role: "user",
-          content: userMsg.content,
+          content: getGeminiUserMessageText(userMsg.content),
         },
         timestamp: userMsg.timestamp,
       });

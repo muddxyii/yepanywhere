@@ -249,7 +249,10 @@ export type {
   GeminiSessionMessage,
   GeminiSessionFile,
 } from "./gemini-schema/session.js";
-export { parseGeminiSessionFile } from "./gemini-schema/session.js";
+export {
+  getGeminiUserMessageText,
+  parseGeminiSessionFile,
+} from "./gemini-schema/session.js";
 
 // OpenCode SDK schema types (for opencode serve SSE events and session storage)
 export type {

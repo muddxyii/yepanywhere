@@ -101,13 +101,23 @@ export type GeminiTokens = z.infer<typeof GeminiTokensSchema>;
 // =============================================================================
 
 /**
+ * Content part in array-style user messages (Gemini CLI ≥ v0.29).
+ */
+export const GeminiContentPartSchema = z.object({
+  text: z.string(),
+});
+
+export type GeminiContentPart = z.infer<typeof GeminiContentPartSchema>;
+
+/**
  * User message in the conversation.
+ * content is a string in older CLI versions, array of parts in newer ones.
  */
 export const GeminiUserMessageSchema = z.object({
   id: z.string(),
   timestamp: z.string(),
   type: z.literal("user"),
-  content: z.string(),
+  content: z.union([z.string(), z.array(GeminiContentPartSchema)]),
 });
 
 export type GeminiUserMessage = z.infer<typeof GeminiUserMessageSchema>;
@@ -157,6 +167,17 @@ export const GeminiSessionFileSchema = z.object({
 });
 
 export type GeminiSessionFile = z.infer<typeof GeminiSessionFileSchema>;
+
+/**
+ * Extract text from a user message content field.
+ * Handles both string (old CLI) and array-of-parts (new CLI) formats.
+ */
+export function getGeminiUserMessageText(
+  content: GeminiUserMessage["content"],
+): string {
+  if (typeof content === "string") return content;
+  return content.map((part) => part.text).join("");
+}
 
 /**
  * Parse a Gemini session file.
