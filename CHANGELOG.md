@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-02-27
+
+### Added
+- Configurable tab size setting for code and diff display
+- Codex scanner diagnostics for troubleshooting session discovery
+
+### Fixed
+- Fix Windows session discovery
+- Fix Gemini session discovery for newer CLI versions
+- Fix Codex/Gemini session discovery when ~/.claude/projects is missing
+
+### Changed
+- Update Gemini model list for v0.30.0 CLI
+- Optimize Gemini session loading with generalized session index
+- Extract shared JSONL/BOM utilities to reduce duplication
+
 ## [0.4.5] - 2026-02-25
 
 ### Added
