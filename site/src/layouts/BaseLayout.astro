@@ -18,7 +18,7 @@ const {
   publishedTime,
   canonicalPath,
 } = Astro.props;
-const pathname = (canonicalPath || Astro.url.pathname).replace(/\.html$/, '');
+const pathname = (canonicalPath || Astro.url.pathname).replace(/\.html$/, "");
 const canonicalURL = new URL(pathname, Astro.site);
 const ogImageURL = ogImage
   ? new URL(ogImage, Astro.site)

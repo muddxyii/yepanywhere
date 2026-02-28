@@ -24,23 +24,23 @@ const {
 const jsonLd = JSON.stringify({
   "@context": "https://schema.org",
   "@type": "BlogPosting",
-  "headline": title,
-  "description": description,
-  "datePublished": publishedTime,
-  "author": {
+  headline: title,
+  description: description,
+  datePublished: publishedTime,
+  author: {
     "@type": "Person",
-    "name": "Kyle Graehl",
-    "url": "https://kyle.graehl.org"
+    name: "Kyle Graehl",
+    url: "https://kyle.graehl.org",
   },
-  "publisher": {
+  publisher: {
     "@type": "Organization",
-    "name": "Yep Anywhere",
-    "url": "https://yepanywhere.com"
+    name: "Yep Anywhere",
+    url: "https://yepanywhere.com",
   },
-  "mainEntityOfPage": {
+  mainEntityOfPage: {
     "@type": "WebPage",
-    "@id": new URL(Astro.url.pathname, Astro.site).href
-  }
+    "@id": new URL(Astro.url.pathname, Astro.site).href,
+  },
 });
 ---
 
