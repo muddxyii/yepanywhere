@@ -9,6 +9,7 @@ import {
 } from "../components/FilterDropdown";
 import { PageHeader } from "../components/PageHeader";
 import { SessionListItem } from "../components/SessionListItem";
+import { useDrafts } from "../hooks/useDrafts";
 import { useGlobalSessions } from "../hooks/useGlobalSessions";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useNavigationLayout } from "../layouts";
@@ -178,6 +179,9 @@ export function GlobalSessionsPage() {
       return true;
     });
   }, [sessions, statusFilters, providerFilters, executorFilters]);
+
+  // Track which sessions have unsent drafts
+  const drafts = useDrafts();
 
   // Build status filter options with global counts from server
   // When filtering by project, we don't have global stats, so omit counts
@@ -714,6 +718,7 @@ export function GlobalSessionsPage() {
                         projectName={session.projectName}
                         basePath={basePath}
                         messageCount={session.messageCount}
+                        hasDraft={drafts.has(session.id)}
                       />
                     </div>
                   ))}

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { type InboxItem, useInboxContext } from "../contexts/InboxContext";
+import { useDrafts } from "../hooks/useDrafts";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import type { Project } from "../types";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
@@ -60,6 +61,8 @@ interface InboxSectionProps {
   hideProjectName?: boolean;
   /** Base path prefix for relay mode (e.g., "/remote/my-server") */
   basePath?: string;
+  /** Set of session IDs that have unsent drafts */
+  drafts: Set<string>;
 }
 
 function InboxSection({
@@ -67,6 +70,7 @@ function InboxSection({
   items,
   hideProjectName,
   basePath = "",
+  drafts,
 }: InboxSectionProps) {
   const isEmpty = items.length === 0;
 
@@ -102,6 +106,7 @@ function InboxSection({
                 showStatusBadge={false}
                 customBadge={badge}
                 basePath={basePath}
+                hasDraft={drafts.has(item.sessionId)}
               />
             );
           })}
@@ -185,6 +190,9 @@ export function InboxContent({
   };
 
   const isEmpty = totalItems === 0 && !loading;
+
+  // Track which sessions have unsent drafts
+  const drafts = useDrafts();
 
   // Build project options for FilterDropdown
   const projectOptions: FilterOption<string>[] = projects
@@ -279,6 +287,7 @@ export function InboxContent({
                 items={tierData[config.key] ?? []}
                 hideProjectName={!!projectId}
                 basePath={basePath}
+                drafts={drafts}
               />
             ))}
           </div>

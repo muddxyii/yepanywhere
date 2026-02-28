@@ -381,6 +381,7 @@ export function SessionListItem({
                 {isStarred && <StarIcon filled size={12} />}
                 {isNewSession && <ThinkingIndicator />}
                 {displayTitle}
+                {hasDraft && <span className="session-draft-badge">Draft</span>}
                 {isArchived && (
                   <span className="session-archived-badge">Archived</span>
                 )}
@@ -427,9 +428,7 @@ export function SessionListItem({
                   {isNewSession && <ThinkingIndicator />}
                   {displayTitle}
                 </span>
-                {hasDraft && (
-                  <span className="session-draft-badge">(draft)</span>
-                )}
+                {hasDraft && <span className="session-draft-badge">Draft</span>}
               </span>
               {showProjectName && projectName && (
                 <span className="session-list-item__project-compact">

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { GlobalSessionItem } from "../api/client";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
+import { useDrafts } from "../hooks/useDrafts";
 import { useGlobalSessions } from "../hooks/useGlobalSessions";
 import { useNeedsAttentionBadge } from "../hooks/useNeedsAttentionBadge";
 import { useRecentProjects } from "../hooks/useRecentProjects";
@@ -232,6 +233,9 @@ export function Sidebar({
     );
   }, [globalSessions]);
 
+  // Track which sessions have unsent drafts in localStorage
+  const drafts = useDrafts();
+
   // In desktop mode, always render. In mobile mode, only render when open.
   if (!isDesktop && !isOpen) return null;
 
@@ -439,6 +443,7 @@ export function Sidebar({
                       projectName={session.projectName}
                       basePath={basePath}
                       messageCount={session.messageCount}
+                      hasDraft={drafts.has(session.id)}
                     />
                   ))}
               </ul>
@@ -490,6 +495,7 @@ export function Sidebar({
                       projectName={session.projectName}
                       basePath={basePath}
                       messageCount={session.messageCount}
+                      hasDraft={drafts.has(session.id)}
                     />
                   ))}
               </ul>
@@ -539,6 +545,7 @@ export function Sidebar({
                     projectName={session.projectName}
                     basePath={basePath}
                     messageCount={session.messageCount}
+                    hasDraft={drafts.has(session.id)}
                   />
                 ))}
               </ul>

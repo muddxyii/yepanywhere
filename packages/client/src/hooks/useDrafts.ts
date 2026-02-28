@@ -1,27 +1,60 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const DRAFT_KEY_PREFIX = "draft-message-";
 const NEW_SESSION_DRAFT_KEY_PREFIX = "draft-new-session-";
 
 /**
- * Hook to track which sessions have draft messages in localStorage.
- * Listens for storage events and re-scans when sessions change.
+ * Scan all localStorage keys to find sessions with non-empty drafts.
+ * Iterates keys by prefix rather than checking per-session — fast when
+ * total localStorage key count is small (typically ~10-20 keys).
+ *
+ * This is the only function that touches storage directly. To migrate
+ * to IndexedDB or another backend, replace this function.
  */
-export function useDrafts(sessionIds: string[]): Set<string> {
-  const [drafts, setDrafts] = useState<Set<string>>(() =>
-    scanDrafts(sessionIds),
-  );
+function scanDrafts(): Set<string> {
+  const result = new Set<string>();
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(DRAFT_KEY_PREFIX)) {
+        const value = localStorage.getItem(key);
+        if (value?.trim()) {
+          result.add(key.slice(DRAFT_KEY_PREFIX.length));
+        }
+      }
+    }
+  } catch {
+    // localStorage might be unavailable
+  }
+  return result;
+}
+
+/**
+ * Returns `prev` if both sets contain the same elements, otherwise `next`.
+ * Used to avoid React re-renders when the draft set hasn't actually changed.
+ */
+export function setsEqual<T>(prev: Set<T>, next: Set<T>): Set<T> {
+  if (prev.size !== next.size) return next;
+  for (const id of next) {
+    if (!prev.has(id)) return next;
+  }
+  return prev;
+}
+
+/**
+ * Hook to track which sessions have draft messages in localStorage.
+ * Returns a Set of session IDs with non-empty drafts.
+ *
+ * Listens for cross-tab storage events and polls every 1s for same-tab changes.
+ */
+export function useDrafts(): Set<string> {
+  const [drafts, setDrafts] = useState(scanDrafts);
 
   const scan = useCallback(() => {
-    setDrafts(scanDrafts(sessionIds));
-  }, [sessionIds]);
+    setDrafts((prev) => setsEqual(prev, scanDrafts()));
+  }, []);
 
-  // Re-scan when sessionIds change
-  useEffect(() => {
-    scan();
-  }, [scan]);
-
-  // Listen for storage events (changes from other tabs or same-tab updates)
+  // Listen for storage events (changes from other tabs)
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
       if (e.key?.startsWith(DRAFT_KEY_PREFIX)) {
@@ -33,29 +66,13 @@ export function useDrafts(sessionIds: string[]): Set<string> {
     return () => window.removeEventListener("storage", handleStorage);
   }, [scan]);
 
-  // Also poll periodically for same-tab changes (storage event doesn't fire for same-tab)
+  // Poll for same-tab changes (storage event doesn't fire for same-tab)
   useEffect(() => {
     const interval = setInterval(scan, 1000);
     return () => clearInterval(interval);
   }, [scan]);
 
-  return useMemo(() => drafts, [drafts]);
-}
-
-function scanDrafts(sessionIds: string[]): Set<string> {
-  const result = new Set<string>();
-  try {
-    for (const sessionId of sessionIds) {
-      const key = `${DRAFT_KEY_PREFIX}${sessionId}`;
-      const value = localStorage.getItem(key);
-      if (value?.trim()) {
-        result.add(sessionId);
-      }
-    }
-  } catch {
-    // localStorage might be unavailable
-  }
-  return result;
+  return drafts;
 }
 
 /**
