@@ -18,6 +18,7 @@
     "test": "pnpm -r test",
     "test:e2e": "pnpm --filter client test:e2e",
     "test:e2e:ui": "pnpm --filter client test:e2e",
+    "test:e2e:emulator:apk": "pnpm --filter client test:e2e:emulator:apk",
     "test:e2e:sdk": "pnpm --filter server test:e2e",
     "test:e2e:sdk:real": "pnpm --filter server test:e2e:real",
     "test:e2e:sdk:local": "pnpm --filter server test:e2e:local",

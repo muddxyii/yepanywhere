@@ -39,6 +39,12 @@ export DEVICE_BRIDGE_USE_APK_FOR_EMULATOR=true
 The bridge will route `emulator-*` IDs through `AndroidDevice` (APK path).  
 You can also force a specific ID explicitly with `android:<serial>` (for example, `android:emulator-5554`).
 
+Run the dedicated E2E variant from repo root:
+
+```bash
+pnpm test:e2e:emulator:apk
+```
+
 ## Wire Protocol
 
 - Handshake (device -> sidecar): `[width u16 LE][height u16 LE]`
