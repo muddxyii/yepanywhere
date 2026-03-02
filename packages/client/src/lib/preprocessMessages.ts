@@ -416,7 +416,7 @@ function attachToolResult(
     resultMessage.toolUseResult ??
     (resultMessage as Record<string, unknown>).tool_use_result;
   const resultData: ToolResultData = {
-    content: block.content || "",
+    content: typeof block.content === "string" ? block.content : "",
     isError: block.is_error || false,
     structured,
   };
@@ -486,7 +486,8 @@ function extractSessionIdFromToolResult(
     }
   }
 
-  const text = item.toolResult?.content ?? "";
+  const raw = item.toolResult?.content ?? "";
+  const text = typeof raw === "string" ? raw : "";
   const match = text.match(
     /(?:^|\n)\s*(?:Process\s+running\s+with\s+session\s+ID|session(?:\s+id)?)\s*:?\s*(\d+)\b/i,
   );
