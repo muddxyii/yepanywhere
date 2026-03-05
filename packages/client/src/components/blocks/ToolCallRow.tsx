@@ -38,6 +38,8 @@ export const ToolCallRow = memo(function ToolCallRow({
   // Check if this tool has a collapsed preview
   const hasCollapsedPreview =
     toolRegistry.hasCollapsedPreview(toolName) && !suppressCollapsedPreview;
+  const hideSummaryWhenPreviewVisible =
+    toolName === "Bash" && status === "pending" && hasCollapsedPreview;
   // Tools with collapsed preview or interactive summary don't expand
   const isNonExpandable = hasInteractiveSummary || hasCollapsedPreview;
 
@@ -126,14 +128,14 @@ export const ToolCallRow = memo(function ToolCallRow({
               renderContext,
             )}
           </span>
-        ) : (
+        ) : !hideSummaryWhenPreviewVisible ? (
           <span className="tool-summary">
             {summary}
             {status === "aborted" && (
               <span className="tool-aborted-label"> (interrupted)</span>
             )}
           </span>
-        )}
+        ) : null}
 
         {!isNonExpandable && (
           <span className="expand-chevron" aria-hidden="true">

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ContentBlock } from "../../../types";
 import { UserPromptBlock } from "../UserPromptBlock";
@@ -27,6 +27,30 @@ describe("UserPromptBlock", () => {
     expect(screen.queryByText("<image>")).toBeNull();
     expect(screen.getByText(/pasted-image-1\.png/)).toBeDefined();
     expect(screen.queryByText(/data:image\/png;base64/i)).toBeNull();
+  });
+
+  it("opens preview modal for Codex inline input_image attachments", () => {
+    const content: ContentBlock[] = [
+      {
+        type: "text",
+        text: "Please review this screenshot.\n<image>\nThanks.",
+      },
+      {
+        type: "input_image",
+        image_url: "data:image/png;base64,AAAA",
+      },
+    ];
+
+    render(<UserPromptBlock content={content} />);
+
+    const attachmentButton = screen.getByRole("button", {
+      name: /pasted-image-1\.png/i,
+    });
+    fireEvent.click(attachmentButton);
+
+    expect(
+      screen.getByRole("img", { name: /pasted-image-1\.png/i }),
+    ).toBeDefined();
   });
 
   it("uses file_path name for Codex input_image attachments", () => {

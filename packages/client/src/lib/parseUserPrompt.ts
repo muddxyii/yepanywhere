@@ -12,6 +12,8 @@ export interface UploadedFileInfo {
   size: string;
   mimeType: string;
   path: string;
+  /** Optional direct preview URL for inline provider attachments (e.g. data: URLs) */
+  previewUrl?: string;
 }
 
 /**

@@ -190,6 +190,7 @@ function extractCodexImageFiles(content: ContentBlock[]): UploadedFileInfo[] {
       size: formatFileSize(inlineData.bytes),
       mimeType,
       path,
+      previewUrl: imageUrl || undefined,
     });
   }
 
@@ -219,11 +220,13 @@ function UploadedFileItem({ file }: { file: UploadedFileInfo }) {
   const [showModal, setShowModal] = useState(false);
   const isImage = isImageMimeType(file.mimeType);
   const apiPath = isImage ? getUploadUrl(file.path) : null;
+  const directPreviewUrl = isImage ? file.previewUrl ?? null : null;
 
   // Use the remote image hook to handle fetching via relay when needed
-  const { url: imageUrl, loading, error } = useRemoteImage(apiPath);
+  const { url: remoteImageUrl, loading, error } = useRemoteImage(apiPath);
+  const imageUrl = directPreviewUrl ?? remoteImageUrl;
 
-  if (isImage && apiPath) {
+  if (isImage && (apiPath || directPreviewUrl)) {
     return (
       <>
         <button
@@ -237,8 +240,12 @@ function UploadedFileItem({ file }: { file: UploadedFileInfo }) {
         {showModal && (
           <Modal title={file.originalName} onClose={() => setShowModal(false)}>
             <div className="uploaded-image-modal">
-              {loading && <div className="image-loading">Loading...</div>}
-              {error && <div className="image-error">Failed to load image</div>}
+              {apiPath && loading && (
+                <div className="image-loading">Loading...</div>
+              )}
+              {apiPath && error && (
+                <div className="image-error">Failed to load image</div>
+              )}
               {imageUrl && <img src={imageUrl} alt={file.originalName} />}
             </div>
           </Modal>
