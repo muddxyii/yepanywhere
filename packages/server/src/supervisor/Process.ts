@@ -763,6 +763,23 @@ export class Process {
   }
 
   /**
+   * Ensure every emitted/replayed message has a timestamp.
+   * Some providers (notably Codex stream messages) omit this field.
+   */
+  private withTimestamp(message: SDKMessage): SDKMessage {
+    if (
+      typeof message.timestamp === "string" &&
+      message.timestamp.trim().length > 0
+    ) {
+      return message;
+    }
+    return {
+      ...message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
    * Add initial user message to history without queuing to SDK.
    * Used for real SDK sessions where the initial message is passed directly
    * to the SDK but needs to be in history for SSE replay to late-joining clients.
@@ -772,12 +789,12 @@ export class Process {
    * @param tempId - Optional client temp ID for optimistic UI tracking
    */
   addInitialUserMessage(text: string, uuid: string, tempId?: string): void {
-    const sdkMessage = {
+    const sdkMessage = this.withTimestamp({
       type: "user",
       uuid,
       tempId,
       message: { role: "user", content: text },
-    } as SDKMessage;
+    } as SDKMessage);
 
     this.currentBucket.push(sdkMessage);
     this.emit({ type: "message", message: sdkMessage });
@@ -850,12 +867,12 @@ export class Process {
     // This ensures SSE/history messages can be deduplicated against JSONL.
     const content = this.buildUserMessageContent(message);
 
-    const sdkMessage = {
+    const sdkMessage = this.withTimestamp({
       type: "user",
       uuid,
       tempId: message.tempId,
       message: { role: "user", content },
-    } as SDKMessage;
+    } as SDKMessage);
 
     // Add to history for SSE replay to late-joining clients.
     // The client-side deduplication (mergeSSEMessage, mergeJSONLMessages) handles
@@ -1437,7 +1454,7 @@ export class Process {
           break;
         }
 
-        const message = result.value;
+        const message = this.withTimestamp(result.value);
         this._lastMessageTime = new Date();
 
         // Store message in history for replay to late-joining clients.
