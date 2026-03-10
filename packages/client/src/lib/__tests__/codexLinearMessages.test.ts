@@ -37,6 +37,37 @@ describe("hasEquivalentJsonlMessage", () => {
       }),
     ).toBe(false);
   });
+
+  it("allows replay messages to match persisted jsonl within a wider overlap window", () => {
+    const existing: Message[] = [
+      {
+        uuid: "jsonl-1",
+        type: "assistant",
+        timestamp: "2026-03-09T10:00:45.000Z",
+        _source: "jsonl",
+        message: {
+          role: "assistant",
+          content:
+            "There's one small TypeScript widening issue in the new helper.",
+        },
+      },
+    ];
+
+    expect(
+      hasEquivalentJsonlMessage(existing, {
+        uuid: "sdk-replay-1",
+        type: "assistant",
+        timestamp: "2026-03-09T10:00:00.000Z",
+        _source: "sdk",
+        isReplay: true,
+        message: {
+          role: "assistant",
+          content:
+            "There's one small TypeScript widening issue in the new helper.",
+        },
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("reconcileCodexLinearMessages", () => {
@@ -121,5 +152,39 @@ describe("reconcileCodexLinearMessages", () => {
     const result = reconcileCodexLinearMessages(messages);
 
     expect(result).toHaveLength(2);
+  });
+
+  it("merges replay/jsonl duplicates across a larger reconnect overlap window", () => {
+    const messages: Message[] = [
+      {
+        uuid: "sdk-replay-1",
+        type: "assistant",
+        timestamp: "2026-03-09T10:00:00.000Z",
+        _source: "sdk",
+        isReplay: true,
+        message: {
+          role: "assistant",
+          content:
+            "There's one small TypeScript widening issue in the new helper.",
+        },
+      },
+      {
+        uuid: "jsonl-1",
+        type: "assistant",
+        timestamp: "2026-03-09T10:00:45.000Z",
+        _source: "jsonl",
+        message: {
+          role: "assistant",
+          content:
+            "There's one small TypeScript widening issue in the new helper.",
+        },
+      },
+    ];
+
+    const result = reconcileCodexLinearMessages(messages);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?._source).toBe("jsonl");
+    expect(result[0]?.uuid).toBe("jsonl-1");
   });
 });

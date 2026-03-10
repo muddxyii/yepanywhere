@@ -2,6 +2,10 @@ import type { Message } from "../types";
 import { getMessageContent, mergeMessage } from "./mergeMessages";
 
 const DEFAULT_TIMESTAMP_WINDOW_MS = 3000;
+const REPLAY_TIMESTAMP_WINDOW_MS = 90_000;
+const MAX_SCAN_MESSAGES = 400;
+
+const semanticFingerprintCache = new WeakMap<Message, string | null>();
 
 function getMessageRole(message: Message): string {
   const nestedRole = (message.message as { role?: unknown } | undefined)?.role;
@@ -76,7 +80,22 @@ function normalizeContentBlock(block: unknown): string {
   }
 }
 
+function isReplayMessage(message: Message): boolean {
+  return message.isReplay === true;
+}
+
+function getAllowedTimestampDeltaMs(a: Message, b: Message): number {
+  return isReplayMessage(a) || isReplayMessage(b)
+    ? REPLAY_TIMESTAMP_WINDOW_MS
+    : DEFAULT_TIMESTAMP_WINDOW_MS;
+}
+
 function getSemanticFingerprint(message: Message): string | null {
+  const cached = semanticFingerprintCache.get(message);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   const content = getMessageContent(message);
 
   let normalizedContent: string;
@@ -85,16 +104,20 @@ function getSemanticFingerprint(message: Message): string | null {
   } else if (Array.isArray(content)) {
     normalizedContent = content.map(normalizeContentBlock).join("|");
   } else {
+    semanticFingerprintCache.set(message, null);
     return null;
   }
 
   if (!normalizedContent.trim()) {
+    semanticFingerprintCache.set(message, null);
     return null;
   }
 
   const type = typeof message.type === "string" ? message.type : "unknown";
   const role = getMessageRole(message);
-  return `${type}|${role}|${normalizedContent}`;
+  const fingerprint = `${type}|${role}|${normalizedContent}`;
+  semanticFingerprintCache.set(message, fingerprint);
+  return fingerprint;
 }
 
 export function getMessageTimestampMs(message: Message): number | null {
@@ -108,7 +131,7 @@ export function getMessageTimestampMs(message: Message): number | null {
 export function hasEquivalentJsonlMessage(
   existing: Message[],
   incoming: Message,
-  options?: { windowMs?: number },
+  options?: { windowMs?: number; replayWindowMs?: number },
 ): boolean {
   const incomingFingerprint = getSemanticFingerprint(incoming);
   const incomingTimestampMs = getMessageTimestampMs(incoming);
@@ -117,7 +140,8 @@ export function hasEquivalentJsonlMessage(
   }
 
   const windowMs = options?.windowMs ?? DEFAULT_TIMESTAMP_WINDOW_MS;
-  const maxScan = 400;
+  const replayWindowMs = options?.replayWindowMs ?? REPLAY_TIMESTAMP_WINDOW_MS;
+  const maxScan = MAX_SCAN_MESSAGES;
   const startIndex = Math.max(0, existing.length - maxScan);
 
   for (let i = existing.length - 1; i >= startIndex; i -= 1) {
@@ -132,7 +156,12 @@ export function hasEquivalentJsonlMessage(
     if (candidateTimestampMs === null) {
       continue;
     }
-    if (Math.abs(candidateTimestampMs - incomingTimestampMs) <= windowMs) {
+    const allowedDeltaMs = isReplayMessage(incoming)
+      ? replayWindowMs
+      : windowMs;
+    if (
+      Math.abs(candidateTimestampMs - incomingTimestampMs) <= allowedDeltaMs
+    ) {
       return true;
     }
   }
@@ -149,9 +178,11 @@ interface IndexedMessage {
 
 export function reconcileCodexLinearMessages(
   messages: Message[],
-  options?: { windowMs?: number },
+  options?: { windowMs?: number; replayWindowMs?: number },
 ): Message[] {
   const windowMs = options?.windowMs ?? DEFAULT_TIMESTAMP_WINDOW_MS;
+  const replayWindowMs = options?.replayWindowMs ?? REPLAY_TIMESTAMP_WINDOW_MS;
+  const maxCandidateWindowMs = Math.max(windowMs, replayWindowMs);
 
   const sorted = messages
     .map(
@@ -188,7 +219,7 @@ export function reconcileCodexLinearMessages(
         if (candidate.timestampMs === null) {
           continue;
         }
-        if (entry.timestampMs - candidate.timestampMs > windowMs) {
+        if (entry.timestampMs - candidate.timestampMs > maxCandidateWindowMs) {
           break;
         }
         if (candidate.fingerprint !== entry.fingerprint) {
@@ -199,6 +230,12 @@ export function reconcileCodexLinearMessages(
           entry.message._source === undefined ||
           candidate.message._source === entry.message._source
         ) {
+          continue;
+        }
+        const allowedDeltaMs =
+          getAllowedTimestampDeltaMs(candidate.message, entry.message) ??
+          windowMs;
+        if (entry.timestampMs - candidate.timestampMs > allowedDeltaMs) {
           continue;
         }
 
