@@ -17,6 +17,7 @@ import type {
   RTCIceCandidateInit,
 } from "@yep-anywhere/shared";
 import { WebSocket } from "ws";
+import { isNewerSemver } from "../utils/semver.js";
 
 /** Fallback bridge version if update server is unreachable. */
 const BRIDGE_VERSION_FALLBACK = "0.0.1";
@@ -31,8 +32,11 @@ const BRIDGE_REPO = "kzahel/yepanywhere";
 let cachedBridgeVersion: { version: string; timestamp: number } | null = null;
 const BRIDGE_VERSION_CACHE_TTL_MS = 5 * 60 * 1000;
 
-async function getBridgeVersion(): Promise<string> {
+async function getBridgeVersion(options?: {
+  forceRefresh?: boolean;
+}): Promise<string> {
   if (
+    !options?.forceRefresh &&
     cachedBridgeVersion &&
     Date.now() - cachedBridgeVersion.timestamp < BRIDGE_VERSION_CACHE_TTL_MS
   ) {
@@ -76,6 +80,25 @@ const USE_APK_FOR_EMULATORS_ENV_VAR = "DEVICE_BRIDGE_USE_APK_FOR_EMULATOR";
 interface SidecarHandshake {
   port: number;
   version: string;
+}
+
+type BridgeBinarySource = "dev" | "prod";
+
+interface BridgeBinaryCandidate {
+  path: string;
+  source: BridgeBinarySource;
+}
+
+interface CachedBinaryVersion {
+  path: string;
+  mtimeMs: number;
+  version: string | null;
+}
+
+export interface DeviceBridgeStatus {
+  state: "available" | "downloadable" | "update-available";
+  installedVersion: string | null;
+  latestVersion: string | null;
 }
 
 /** IPC message from sidecar → server */
@@ -132,6 +155,9 @@ export class DeviceBridgeService {
   private lastStartFailure = 0;
   /** Cooldown period after a failed start (10s). */
   private startCooldownMs = 10_000;
+  private activeBinaryPath: string | null = null;
+  private runningBridgeVersion: string | null = null;
+  private binaryVersionCache: CachedBinaryVersion | null = null;
 
   /** Maps streaming sessionId → client send function */
   private clientSenders = new Map<string, ClientSendFn>();
@@ -146,8 +172,8 @@ export class DeviceBridgeService {
     return this.available;
   }
 
-  /** Find the sidecar binary path. */
-  private findBinaryPath(): string | null {
+  /** Find the sidecar binary path and whether it is managed by auto-update. */
+  private findBinaryCandidate(): BridgeBinaryCandidate | null {
     // Dev mode: local build
     const devExt = os.platform() === "win32" ? ".exe" : "";
     const devPath = path.resolve(
@@ -155,7 +181,7 @@ export class DeviceBridgeService {
       `../../../device-bridge/bridge${devExt}`,
     );
     if (fs.existsSync(devPath)) {
-      return devPath;
+      return { path: devPath, source: "dev" };
     }
 
     // Production: downloaded binary
@@ -170,10 +196,15 @@ export class DeviceBridgeService {
       `device-bridge-${platform}-${arch}${ext}`,
     );
     if (fs.existsSync(prodPath)) {
-      return prodPath;
+      return { path: prodPath, source: "prod" };
     }
 
     return null;
+  }
+
+  /** Find the sidecar binary path. */
+  private findBinaryPath(): string | null {
+    return this.findBinaryCandidate()?.path ?? null;
   }
 
   /** Whether the sidecar binary is available (without starting it). */
@@ -196,6 +227,10 @@ export class DeviceBridgeService {
   private getProdBinaryPath(): string {
     const { name } = this.getBinaryInfo();
     return path.join(this.dataDir, "bin", name);
+  }
+
+  private isRunningProductionBinary(): boolean {
+    return this.activeBinaryPath === this.getProdBinaryPath();
   }
 
   /** Production Android server APK path (where auto-download writes to). */
@@ -281,13 +316,108 @@ export class DeviceBridgeService {
     return true;
   }
 
+  private async probeBinaryVersion(binaryPath: string): Promise<string | null> {
+    const child = spawn(binaryPath, ["--ipc", "--adb-path", this.adbPath], {
+      stdio: ["ignore", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        [DATA_DIR_ENV_VAR]: this.dataDir,
+      },
+    });
+
+    try {
+      const handshake = await this.readHandshake(child);
+      return handshake.version || null;
+    } catch (err) {
+      console.warn(
+        `[DeviceBridge] Failed to probe bridge version for ${binaryPath}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    } finally {
+      if (!child.killed) {
+        child.kill("SIGTERM");
+      }
+    }
+  }
+
+  private async getInstalledBinaryVersion(binaryPath: string): Promise<string | null> {
+    if (
+      this.activeBinaryPath === binaryPath &&
+      this.runningBridgeVersion &&
+      this.process
+    ) {
+      return this.runningBridgeVersion;
+    }
+
+    try {
+      const stat = fs.statSync(binaryPath);
+      if (
+        this.binaryVersionCache &&
+        this.binaryVersionCache.path === binaryPath &&
+        this.binaryVersionCache.mtimeMs === stat.mtimeMs
+      ) {
+        return this.binaryVersionCache.version;
+      }
+
+      const version = await this.probeBinaryVersion(binaryPath);
+      this.binaryVersionCache = {
+        path: binaryPath,
+        mtimeMs: stat.mtimeMs,
+        version,
+      };
+      return version;
+    } catch {
+      return null;
+    }
+  }
+
+  async getBridgeStatus(options?: {
+    forceRefresh?: boolean;
+  }): Promise<DeviceBridgeStatus> {
+    const binary = this.findBinaryCandidate();
+    if (!binary) {
+      return {
+        state: "downloadable",
+        installedVersion: null,
+        latestVersion: null,
+      };
+    }
+
+    if (binary.source === "dev") {
+      return {
+        state: "available",
+        installedVersion: null,
+        latestVersion: null,
+      };
+    }
+
+    const [installedVersion, latestVersion] = await Promise.all([
+      this.getInstalledBinaryVersion(binary.path),
+      getBridgeVersion({ forceRefresh: options?.forceRefresh }),
+    ]);
+
+    const state =
+      !installedVersion ||
+      (latestVersion && isNewerSemver(installedVersion, latestVersion))
+        ? "update-available"
+        : "available";
+
+    return {
+      state,
+      installedVersion,
+      latestVersion,
+    };
+  }
+
   private async downloadReleaseAsset(
     name: string,
     destPath: string,
     options?: { executable?: boolean; kindLabel?: string },
   ): Promise<string> {
     const kindLabel = options?.kindLabel ?? name;
-    const bridgeVersion = await getBridgeVersion();
+    const bridgeVersion = await getBridgeVersion({ forceRefresh: true });
     const url = `https://github.com/${BRIDGE_REPO}/releases/download/bridge-v${bridgeVersion}/${name}`;
     const destDir = path.dirname(destPath);
     fs.mkdirSync(destDir, { recursive: true });
@@ -340,10 +470,27 @@ export class DeviceBridgeService {
     binaryPath: string;
     apkPath: string;
   }> {
+    const shouldRestartManagedSidecar = this.isRunningProductionBinary();
+    const wasRunning = shouldRestartManagedSidecar && this.isAvailable();
+
+    if (shouldRestartManagedSidecar && os.platform() === "win32") {
+      await this.shutdown();
+    }
+
     const [binaryPath, apkPath] = await Promise.all([
       this.downloadBinary(),
       this.downloadAndroidServerAPK(),
     ]);
+
+    this.binaryVersionCache = null;
+
+    if (shouldRestartManagedSidecar && os.platform() !== "win32") {
+      await this.shutdown();
+    }
+    if (wasRunning) {
+      await this.ensureStarted();
+    }
+
     return { binaryPath, apkPath };
   }
 
@@ -437,12 +584,13 @@ export class DeviceBridgeService {
     }
 
     try {
-      const binaryPath = this.findBinaryPath();
-      if (!binaryPath) {
+      const binary = this.findBinaryCandidate();
+      if (!binary) {
         throw new Error(
           "Device bridge binary not found. Build it or download it first.",
         );
       }
+      const binaryPath = binary.path;
 
       // Kill any orphaned bridge processes from previous server runs.
       this.killStaleProcesses();
@@ -468,6 +616,13 @@ export class DeviceBridgeService {
       // Read the handshake from stdout (first line).
       const handshake = await this.readHandshake(child);
       this.port = handshake.port;
+      this.activeBinaryPath = binaryPath;
+      this.runningBridgeVersion = handshake.version;
+      this.binaryVersionCache = {
+        path: binaryPath,
+        mtimeMs: fs.statSync(binaryPath).mtimeMs,
+        version: handshake.version,
+      };
 
       console.log(
         `[DeviceBridge] Sidecar started on port ${this.port} (v${handshake.version})`,
@@ -791,6 +946,8 @@ export class DeviceBridgeService {
     this.ws?.close();
     this.ws = null;
     this.port = null;
+    this.activeBinaryPath = null;
+    this.runningBridgeVersion = null;
     this.clientSenders.clear();
   }
 

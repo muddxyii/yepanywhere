@@ -402,6 +402,12 @@ export function createApp(options: AppOptions): AppResult {
           ? "available"
           : "downloadable";
       },
+      getDeviceBridgeStatus: ({ forceRefresh } = {}) => {
+        if (!options.deviceBridgeService) {
+          return Promise.resolve({ state: "unavailable" as const });
+        }
+        return options.deviceBridgeService.getBridgeStatus({ forceRefresh });
+      },
       isDeviceBridgeEnabled: () =>
         options.serverSettingsService?.getSetting("deviceBridgeEnabled") ??
         false,

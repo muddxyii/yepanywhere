@@ -257,6 +257,16 @@ export interface VersionInfo {
   resumeProtocolVersion?: number;
   /** Feature capabilities supported by the server. Undefined on older servers. */
   capabilities?: string[];
+  /** Device bridge availability and update state. Undefined on older servers. */
+  deviceBridgeState?:
+    | "available"
+    | "downloadable"
+    | "update-available"
+    | "unavailable";
+  /** Installed managed bridge binary version when known. */
+  deviceBridgeVersion?: string | null;
+  /** Latest bridge release version when known. */
+  latestDeviceBridgeVersion?: string | null;
 }
 
 export interface ServerInfo {

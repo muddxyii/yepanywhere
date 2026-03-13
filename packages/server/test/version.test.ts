@@ -194,4 +194,38 @@ describe("GET /version", () => {
     expect(json.resumeProtocolVersion).toBeTypeOf("number");
     expect(Array.isArray(json.capabilities)).toBe(true);
   });
+
+  it("reports update-available for stale bridge binaries", async () => {
+    mockFetch(() => new Response(null, { status: 204 }));
+
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes({
+      isDeviceBridgeEnabled: () => true,
+      getDeviceBridgeStatus: async () => ({
+        state: "update-available",
+        installedVersion: "0.1.0",
+        latestVersion: "0.2.0",
+      }),
+    });
+    const res = await routes.request("/");
+    const json = await res.json();
+
+    expect(json.deviceBridgeState).toBe("update-available");
+    expect(json.deviceBridgeVersion).toBe("0.1.0");
+    expect(json.latestDeviceBridgeVersion).toBe("0.2.0");
+    expect(json.capabilities).toContain("deviceBridge-download");
+    expect(json.capabilities).toContain("deviceBridge-update");
+    expect(json.capabilities).not.toContain("deviceBridge");
+  });
+
+  it("preserves legacy sync bridge state for compatibility helpers", async () => {
+    const { getServerCapabilities } = await importVersion();
+    const capabilities = getServerCapabilities({
+      getDeviceBridgeState: () => "downloadable",
+      isDeviceBridgeEnabled: () => true,
+    });
+
+    expect(capabilities).toContain("deviceBridge-download");
+    expect(capabilities).not.toContain("deviceBridge-update");
+  });
 });

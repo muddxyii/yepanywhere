@@ -378,7 +378,17 @@ function StreamView({
   );
 }
 
-function DownloadPrompt({ onDownloaded }: { onDownloaded: () => void }) {
+export function BridgeRuntimePrompt({
+  mode,
+  installedVersion,
+  latestVersion,
+  onDownloaded,
+}: {
+  mode: "download" | "update";
+  installedVersion?: string | null;
+  latestVersion?: string | null;
+  onDownloaded: () => void;
+}) {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -402,8 +412,19 @@ function DownloadPrompt({ onDownloaded }: { onDownloaded: () => void }) {
   return (
     <div className="emulator-download-prompt">
       <p>
-        Device streaming requires bridge runtime downloads (sidecar binary +
-        Android server APK).
+        {mode === "update" ? (
+          <>
+            Device streaming needs a bridge runtime update before use.
+            {installedVersion && latestVersion
+              ? ` Installed: v${installedVersion}. Latest: v${latestVersion}.`
+              : null}
+          </>
+        ) : (
+          <>
+            Device streaming requires bridge runtime downloads (sidecar binary
+            + Android server APK).
+          </>
+        )}
       </p>
       {error && <div className="emulator-error">{error}</div>}
       <button
@@ -412,7 +433,13 @@ function DownloadPrompt({ onDownloaded }: { onDownloaded: () => void }) {
         onClick={handleDownload}
         disabled={downloading}
       >
-        {downloading ? "Downloading..." : "Download Bridge"}
+        {downloading
+          ? mode === "update"
+            ? "Updating..."
+            : "Downloading..."
+          : mode === "update"
+            ? "Update Bridge"
+            : "Download Bridge"}
       </button>
     </div>
   );
@@ -423,9 +450,14 @@ export function EmulatorPage() {
     useNavigationLayout();
   const { version: versionInfo, refetch: refetchVersion } = useVersion();
   const capabilities = versionInfo?.capabilities ?? [];
-  const needsDownload =
-    capabilities.includes("deviceBridge-download") &&
-    !capabilities.includes("deviceBridge");
+  const bridgeRuntimeMode =
+    versionInfo?.deviceBridgeState === "update-available"
+      ? "update"
+      : capabilities.includes("deviceBridge-download") &&
+          !capabilities.includes("deviceBridge")
+        ? "download"
+        : null;
+  const needsDownload = bridgeRuntimeMode !== null;
 
   const { emulators, loading, error, startEmulator, stopEmulator } =
     useEmulators({ enabled: !needsDownload });
@@ -465,8 +497,13 @@ export function EmulatorPage() {
         />
         <main className="page-scroll-container">
           <div className="page-content-inner">
-            {needsDownload ? (
-              <DownloadPrompt onDownloaded={refetchVersion} />
+            {bridgeRuntimeMode ? (
+              <BridgeRuntimePrompt
+                mode={bridgeRuntimeMode}
+                installedVersion={versionInfo?.deviceBridgeVersion}
+                latestVersion={versionInfo?.latestDeviceBridgeVersion}
+                onDownloaded={refetchVersion}
+              />
             ) : (
               <>
                 {loading && <div className="emulator-loading">Loading...</div>}

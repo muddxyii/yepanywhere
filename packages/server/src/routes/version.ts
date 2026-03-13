@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
+import { isNewerSemver } from "../utils/semver.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,37 +112,6 @@ async function getLatestVersion(
   }
 }
 
-/**
- * Compare semver versions
- * Returns true if latest is newer than current
- */
-function isNewerVersion(current: string, latest: string): boolean {
-  if (current === "unknown" || !latest) return false;
-
-  const parseVersion = (v: string) => {
-    const match = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-    if (!match || !match[1] || !match[2] || !match[3]) return null;
-    return {
-      major: Number.parseInt(match[1], 10),
-      minor: Number.parseInt(match[2], 10),
-      patch: Number.parseInt(match[3], 10),
-    };
-  };
-
-  const currentParsed = parseVersion(current);
-  const latestParsed = parseVersion(latest);
-
-  if (!currentParsed || !latestParsed) return false;
-
-  if (latestParsed.major > currentParsed.major) return true;
-  if (latestParsed.major < currentParsed.major) return false;
-
-  if (latestParsed.minor > currentParsed.minor) return true;
-  if (latestParsed.minor < currentParsed.minor) return false;
-
-  return latestParsed.patch > currentParsed.patch;
-}
-
 export interface VersionInfo {
   current: string;
   latest: string | null;
@@ -150,6 +120,12 @@ export interface VersionInfo {
   resumeProtocolVersion: number;
   /** Feature capabilities supported by this server. Used by clients to show/hide UI. */
   capabilities: string[];
+  /** Device bridge availability and update state. */
+  deviceBridgeState?: DeviceBridgeState;
+  /** Installed managed bridge binary version when known. */
+  deviceBridgeVersion?: string | null;
+  /** Latest bridge release version when known. */
+  latestDeviceBridgeVersion?: string | null;
 }
 
 /** Resume protocol version with nonce challenge + proof binding. */
@@ -158,11 +134,25 @@ export const RESUME_PROTOCOL_VERSION = 2;
 /** Base capabilities always advertised. */
 const BASE_CAPABILITIES = ["git-status"];
 
-export type DeviceBridgeState = "available" | "downloadable" | "unavailable";
+export type DeviceBridgeState =
+  | "available"
+  | "downloadable"
+  | "update-available"
+  | "unavailable";
+
+export interface DeviceBridgeStatus {
+  state: DeviceBridgeState;
+  installedVersion?: string | null;
+  latestVersion?: string | null;
+}
 
 export interface VersionRouteOptions {
   /** Dynamic device bridge state: available (binary exists), downloadable (ADB found, no binary), unavailable (no ADB). */
   getDeviceBridgeState?: () => DeviceBridgeState;
+  /** Detailed device bridge status for version-aware update prompts. */
+  getDeviceBridgeStatus?: (options?: {
+    forceRefresh?: boolean;
+  }) => Promise<DeviceBridgeStatus>;
   /** Whether the user has opted into the device bridge feature. */
   isDeviceBridgeEnabled?: () => boolean;
   /** Unique installation ID for update analytics. */
@@ -176,22 +166,38 @@ export interface ServerCompatibilityInfo {
   capabilities: string[];
 }
 
+function getCapabilitiesForDeviceBridgeState(
+  state: DeviceBridgeState,
+  enabled: boolean,
+): string[] {
+  if (state === "unavailable") {
+    return [];
+  }
+
+  const capabilities = ["deviceBridge-available"];
+  if (!enabled) {
+    return capabilities;
+  }
+
+  if (state === "available") {
+    capabilities.push("deviceBridge");
+    return capabilities;
+  }
+
+  capabilities.push("deviceBridge-download");
+  if (state === "update-available") {
+    capabilities.push("deviceBridge-update");
+  }
+  return capabilities;
+}
+
 export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   const capabilities = [...BASE_CAPABILITIES];
   const deviceBridgeState = options?.getDeviceBridgeState?.() ?? "unavailable";
-  if (deviceBridgeState !== "unavailable") {
-    // Hardware is present — always advertise so settings page can show opt-in
-    capabilities.push("deviceBridge-available");
-    // Only advertise active capabilities when user has opted in
-    const enabled = options?.isDeviceBridgeEnabled?.() ?? false;
-    if (enabled) {
-      if (deviceBridgeState === "available") {
-        capabilities.push("deviceBridge");
-      } else {
-        capabilities.push("deviceBridge-download");
-      }
-    }
-  }
+  const enabled = options?.isDeviceBridgeEnabled?.() ?? false;
+  capabilities.push(
+    ...getCapabilitiesForDeviceBridgeState(deviceBridgeState, enabled),
+  );
   return capabilities;
 }
 
@@ -209,10 +215,17 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
   const routes = new Hono();
 
   routes.get("/", async (c) => {
-    const compatibility = getServerCompatibilityInfo(options);
-    const current = compatibility.appVersion;
+    const current = getCurrentVersion();
     const fresh =
       c.req.query("fresh") === "1" || c.req.query("fresh") === "true";
+    const deviceBridgeStatus = options?.getDeviceBridgeStatus
+      ? await options.getDeviceBridgeStatus({ forceRefresh: fresh })
+      : { state: options?.getDeviceBridgeState?.() ?? "unavailable" };
+    const enabled = options?.isDeviceBridgeEnabled?.() ?? false;
+    const capabilities = [
+      ...BASE_CAPABILITIES,
+      ...getCapabilitiesForDeviceBridgeState(deviceBridgeStatus.state, enabled),
+    ];
 
     // For dev versions like "v0.1.7-3-g050bfd2", extract base version "v0.1.7"
     // to compare against the update server.
@@ -221,15 +234,18 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       forceRefresh: fresh,
     });
     const updateAvailable = latest
-      ? isNewerVersion(baseVersion, latest)
+      ? isNewerSemver(baseVersion, latest)
       : false;
 
     const info: VersionInfo = {
       current,
       latest,
       updateAvailable,
-      resumeProtocolVersion: compatibility.resumeProtocolVersion,
-      capabilities: compatibility.capabilities,
+      resumeProtocolVersion: RESUME_PROTOCOL_VERSION,
+      capabilities,
+      deviceBridgeState: deviceBridgeStatus.state,
+      deviceBridgeVersion: deviceBridgeStatus.installedVersion ?? null,
+      latestDeviceBridgeVersion: deviceBridgeStatus.latestVersion ?? null,
     };
 
     return c.json(info);

@@ -5,6 +5,8 @@ type DeviceBridgeServiceTestShim = DeviceBridgeService & {
   ensureStarted: () => Promise<void>;
   ensureAndroidServerAPK: () => Promise<string>;
   sendToSidecar: (msg: Record<string, unknown>) => void;
+  getInstalledBinaryVersion: (binaryPath: string) => Promise<string | null>;
+  shutdown: () => Promise<void>;
   port: number | null;
 };
 
@@ -169,5 +171,104 @@ describe("DeviceBridgeService", () => {
     );
 
     expect(shim.ensureAndroidServerAPK).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports update-available for stale managed binaries", async () => {
+    const service = new DeviceBridgeService({
+      adbPath: "adb",
+      dataDir: "/tmp/yep-anywhere-test",
+    });
+    const shim = service as unknown as DeviceBridgeServiceTestShim & {
+      findBinaryCandidate: () => { path: string; source: "prod" | "dev" } | null;
+    };
+
+    shim.findBinaryCandidate = vi.fn().mockReturnValue({
+      path: "/tmp/yep-anywhere-test/bin/device-bridge-darwin-arm64",
+      source: "prod",
+    });
+    shim.getInstalledBinaryVersion = vi.fn().mockResolvedValue("0.1.0");
+
+    global.fetch = vi.fn((url) => {
+      if (String(url) === "https://updates.yepanywhere.com/bridge/version") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ version: "0.2.0" }), { status: 200 }),
+        );
+      }
+      throw new Error(`Unexpected fetch: ${String(url)}`);
+    }) as unknown as typeof fetch;
+
+    await expect(service.getBridgeStatus()).resolves.toEqual({
+      state: "update-available",
+      installedVersion: "0.1.0",
+      latestVersion: "0.2.0",
+    });
+  });
+
+  it("reports update-available when managed binary version probe fails", async () => {
+    const service = new DeviceBridgeService({
+      adbPath: "adb",
+      dataDir: "/tmp/yep-anywhere-test",
+    });
+    const shim = service as unknown as DeviceBridgeServiceTestShim & {
+      findBinaryCandidate: () => { path: string; source: "prod" | "dev" } | null;
+    };
+
+    shim.findBinaryCandidate = vi.fn().mockReturnValue({
+      path: "/tmp/yep-anywhere-test/bin/device-bridge-darwin-arm64",
+      source: "prod",
+    });
+    shim.getInstalledBinaryVersion = vi.fn().mockResolvedValue(null);
+
+    global.fetch = vi.fn((url) => {
+      if (String(url) === "https://updates.yepanywhere.com/bridge/version") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ version: "0.2.0" }), { status: 200 }),
+        );
+      }
+      throw new Error(`Unexpected fetch: ${String(url)}`);
+    }) as unknown as typeof fetch;
+
+    await expect(service.getBridgeStatus()).resolves.toEqual({
+      state: "update-available",
+      installedVersion: null,
+      latestVersion: "0.2.0",
+    });
+  });
+
+  it("restarts a running managed sidecar after downloading updates", async () => {
+    const service = new DeviceBridgeService({
+      adbPath: "adb",
+      dataDir: "/tmp/yep-anywhere-test",
+    });
+    const shim = service as unknown as DeviceBridgeServiceTestShim & {
+      activeBinaryPath: string | null;
+      available: boolean;
+      getProdBinaryPath: () => string;
+      downloadBinary: () => Promise<string>;
+      downloadAndroidServerAPK: () => Promise<string>;
+    };
+    const prodBinaryPath = shim.getProdBinaryPath();
+
+    shim.activeBinaryPath = prodBinaryPath;
+    shim.available = true;
+    shim.downloadBinary = vi
+      .fn()
+      .mockResolvedValue(prodBinaryPath);
+    shim.downloadAndroidServerAPK = vi
+      .fn()
+      .mockResolvedValue("/tmp/yep-anywhere-test/bin/yep-device-server.apk");
+    shim.shutdown = vi.fn().mockResolvedValue(undefined);
+    shim.ensureStarted = vi.fn().mockResolvedValue(undefined);
+
+    await expect(service.downloadRuntimeDependencies()).resolves.toEqual({
+      binaryPath: prodBinaryPath,
+      apkPath: "/tmp/yep-anywhere-test/bin/yep-device-server.apk",
+    });
+
+    expect(shim.shutdown).toHaveBeenCalledTimes(1);
+    expect(shim.ensureStarted).toHaveBeenCalledTimes(1);
+    expect(shim.shutdown.mock.invocationCallOrder[0]).toBeLessThan(
+      shim.ensureStarted.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
   });
 });
