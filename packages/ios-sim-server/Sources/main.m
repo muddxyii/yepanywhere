@@ -1,9 +1,14 @@
+#import <AppKit/AppKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
 #import <IOSurface/IOSurface.h>
 #import <VideoToolbox/VideoToolbox.h>
+#import <dlfcn.h>
+#import <mach/mach_time.h>
+#import <malloc/malloc.h>
+#import <math.h>
 #import <objc/message.h>
 #import <unistd.h>
 
@@ -12,6 +17,94 @@ typedef NS_ENUM(uint8_t, MessageType) {
   MessageTypeFrameResponse = 0x02,
   MessageTypeControl = 0x03,
 };
+
+typedef NS_ENUM(uint32_t, IndigoButtonEventType) {
+  IndigoButtonEventTypeDown = 0x1,
+  IndigoButtonEventTypeUp = 0x2,
+};
+
+typedef NS_ENUM(uint32_t, IndigoButtonTarget) {
+  IndigoButtonTargetTouchScreen = 0x32,
+  IndigoButtonTargetHardware = 0x33,
+};
+
+typedef NS_ENUM(uint32_t, IndigoButtonSource) {
+  IndigoButtonSourceApplePay = 0x1f4,
+  IndigoButtonSourceHome = 0x0,
+  IndigoButtonSourceLock = 0x1,
+  IndigoButtonSourceSide = 0xbb8,
+  IndigoButtonSourceSiri = 0x400002,
+};
+
+#pragma pack(push, 4)
+typedef struct {
+  unsigned int msgh_bits;
+  unsigned int msgh_size;
+  unsigned int msgh_remote_port;
+  unsigned int msgh_local_port;
+  unsigned int msgh_voucher_port;
+  int msgh_id;
+} MachMessageHeader;
+
+typedef struct {
+  unsigned int field1;
+  unsigned int field2;
+  unsigned int field3;
+  double xRatio;
+  double yRatio;
+  double field6;
+  double field7;
+  double field8;
+  unsigned int field9;
+  unsigned int field10;
+  unsigned int field11;
+  unsigned int field12;
+  unsigned int field13;
+  double field14;
+  double field15;
+  double field16;
+  double field17;
+  double field18;
+} IndigoTouch;
+
+typedef struct {
+  unsigned int eventSource;
+  unsigned int eventType;
+  unsigned int eventTarget;
+  unsigned int keyCode;
+  unsigned int field5;
+} IndigoButton;
+
+typedef union {
+  IndigoTouch touch;
+  IndigoButton button;
+} IndigoEvent;
+
+typedef struct {
+  unsigned int field1;
+  unsigned long long timestamp;
+  unsigned int field3;
+  IndigoEvent event;
+} IndigoPayload;
+
+typedef struct {
+  MachMessageHeader header;
+  unsigned int innerSize;
+  unsigned char eventType;
+  IndigoPayload payload;
+} IndigoMessage;
+#pragma pack(pop)
+
+typedef IndigoMessage *(*IndigoButtonMessageFn)(int keyCode, int op, int target);
+typedef IndigoMessage *(*IndigoKeyboardMessageFn)(NSEvent *event);
+typedef IndigoMessage *(*IndigoMouseMessageFn)(CGPoint *point0, CGPoint *point1, int target, int eventType, BOOL something);
+
+typedef struct {
+  id hidClient;
+  IndigoButtonMessageFn buttonFn;
+  IndigoKeyboardMessageFn keyboardFn;
+  IndigoMouseMessageFn mouseFn;
+} HIDContext;
 
 static id SendId(id target, const char *selectorName) {
   SEL sel = sel_registerName(selectorName);
@@ -36,6 +129,17 @@ static id SendIdArgError(id target, const char *selectorName, id arg, NSError **
 static BOOL SendBoolArgError(id target, const char *selectorName, id arg, NSError **error) {
   SEL sel = sel_registerName(selectorName);
   return ((BOOL(*)(id, SEL, id, NSError **))objc_msgSend)(target, sel, arg, error);
+}
+
+static void SendMessageFreeQueueCompletion(id target,
+                                           const char *selectorName,
+                                           IndigoMessage *message,
+                                           BOOL freeWhenDone,
+                                           id queue,
+                                           id completion) {
+  SEL sel = sel_registerName(selectorName);
+  ((void(*)(id, SEL, IndigoMessage *, BOOL, id, id))objc_msgSend)(
+      target, sel, message, freeWhenDone, queue, completion);
 }
 
 static NSString *DescribeObject(id obj) {
@@ -350,7 +454,410 @@ static IOSurfaceRef CopyFramebufferSurface(id device, int *widthOut, int *height
   return nil;
 }
 
-static BOOL HandleControlPayload(NSData *payload, NSError **error) {
+static id FindFramebufferDescriptor(id device) {
+  id io = SendId(device, "io");
+  id ioPorts = ValueForKeySafe(io, @"ioPorts");
+  for (id port in ioPorts) {
+    if (![port respondsToSelector:sel_registerName("descriptor")]) continue;
+    id descriptor = SendId(port, "descriptor");
+    if ([descriptor respondsToSelector:sel_registerName("framebufferSurface")]) {
+      id surfaceObj = SendId(descriptor, "framebufferSurface");
+      if (surfaceObj) return descriptor;
+    }
+  }
+  return nil;
+}
+
+static void DestroyHIDContext(HIDContext *context) {
+  if (!context) return;
+  context->hidClient = nil;
+  context->buttonFn = NULL;
+  context->keyboardFn = NULL;
+  context->mouseFn = NULL;
+}
+
+static BOOL CreateHIDContext(id device, HIDContext *context, NSError **error) {
+  if (!context) return NO;
+  context->hidClient = nil;
+  context->buttonFn = NULL;
+  context->keyboardFn = NULL;
+  context->mouseFn = NULL;
+
+  const char *simulatorKitPath =
+      "/Applications/Xcode.app/Contents/Developer/Library/PrivateFrameworks/SimulatorKit.framework/SimulatorKit";
+  void *simKitHandle = dlopen(simulatorKitPath, RTLD_NOW);
+  if (!simKitHandle) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:20
+                               userInfo:@{
+                                 NSLocalizedDescriptionKey: @"Failed to load SimulatorKit.framework",
+                                 @"dlerror": [NSString stringWithUTF8String:dlerror() ?: ""],
+                               }];
+    }
+    return NO;
+  }
+
+  context->buttonFn = (IndigoButtonMessageFn)dlsym(simKitHandle, "IndigoHIDMessageForButton");
+  context->keyboardFn = (IndigoKeyboardMessageFn)dlsym(simKitHandle, "IndigoHIDMessageForKeyboardNSEvent");
+  context->mouseFn = (IndigoMouseMessageFn)dlsym(simKitHandle, "IndigoHIDMessageForMouseNSEvent");
+  if (!context->buttonFn || !context->keyboardFn || !context->mouseFn) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:21
+                               userInfo:@{NSLocalizedDescriptionKey: @"Required IndigoHID symbols are missing"}];
+    }
+    return NO;
+  }
+
+  Class hidClientClass = NSClassFromString(@"SimDeviceLegacyHIDClient");
+  if (!hidClientClass) {
+    hidClientClass = NSClassFromString(@"SimulatorKit.SimDeviceLegacyHIDClient");
+  }
+  if (!hidClientClass) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:22
+                               userInfo:@{NSLocalizedDescriptionKey: @"SimDeviceLegacyHIDClient class is unavailable"}];
+    }
+    return NO;
+  }
+
+  NSError *hidError = nil;
+  id hidClient = SendIdArgError(SendId(hidClientClass, "alloc"), "initWithDevice:error:", device, &hidError);
+  if (!hidClient || hidError != nil) {
+    if (error) *error = hidError;
+    return NO;
+  }
+
+  context->hidClient = hidClient;
+  return YES;
+}
+
+static BOOL SendHIDMessage(HIDContext *context, IndigoMessage *message, NSError **error) {
+  if (!context || !context->hidClient || !message) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:23
+                               userInfo:@{NSLocalizedDescriptionKey: @"HID client is not initialized"}];
+    }
+    return NO;
+  }
+  SendMessageFreeQueueCompletion(
+      context->hidClient,
+      "sendWithMessage:freeWhenDone:completionQueue:completion:",
+      message,
+      YES,
+      nil,
+      nil);
+  return YES;
+}
+
+static IndigoMessage *CreateTouchMessage(HIDContext *context, CGPoint point, IndigoButtonEventType direction) {
+  if (!context || !context->mouseFn) return NULL;
+  IndigoMessage *seedMessage =
+      context->mouseFn(&point, NULL, IndigoButtonTargetTouchScreen, (int)direction, NO);
+  if (!seedMessage) return NULL;
+
+  seedMessage->payload.event.touch.xRatio = point.x;
+  seedMessage->payload.event.touch.yRatio = point.y;
+
+  size_t messageSize = sizeof(IndigoMessage) + sizeof(IndigoPayload);
+  IndigoMessage *message = calloc(1, messageSize);
+  if (!message) {
+    free(seedMessage);
+    return NULL;
+  }
+
+  message->innerSize = sizeof(IndigoPayload);
+  message->eventType = 2;
+  message->payload.field1 = 0x0000000b;
+  message->payload.timestamp = mach_absolute_time();
+  memcpy(&(message->payload.event.button), &(seedMessage->payload.event.touch), sizeof(IndigoTouch));
+
+  IndigoPayload *second = (IndigoPayload *)(((uint8_t *)&message->payload) + sizeof(IndigoPayload));
+  memcpy(second, &(message->payload), sizeof(IndigoPayload));
+  second->event.touch.field1 = 0x00000001;
+  second->event.touch.field2 = 0x00000002;
+
+  free(seedMessage);
+  return message;
+}
+
+static IndigoButtonSource IndigoButtonSourceForName(NSString *buttonName) {
+  NSString *lower = buttonName.lowercaseString;
+  if ([lower isEqualToString:@"apple_pay"] || [lower isEqualToString:@"applepay"]) {
+    return IndigoButtonSourceApplePay;
+  }
+  if ([lower isEqualToString:@"home"]) {
+    return IndigoButtonSourceHome;
+  }
+  if ([lower isEqualToString:@"lock"]) {
+    return IndigoButtonSourceLock;
+  }
+  if ([lower isEqualToString:@"side"]) {
+    return IndigoButtonSourceSide;
+  }
+  if ([lower isEqualToString:@"siri"]) {
+    return IndigoButtonSourceSiri;
+  }
+  return 0;
+}
+
+static BOOL SendButtonShortPress(HIDContext *context, NSString *buttonName, NSError **error) {
+  IndigoButtonSource source = IndigoButtonSourceForName(buttonName);
+  if (source == 0 && ![buttonName.lowercaseString isEqualToString:@"home"]) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:24
+                               userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unsupported button '%@'", buttonName ?: @""]}];
+    }
+    return NO;
+  }
+
+  IndigoMessage *downMessage =
+      context->buttonFn((int)source, IndigoButtonEventTypeDown, IndigoButtonTargetHardware);
+  IndigoMessage *upMessage =
+      context->buttonFn((int)source, IndigoButtonEventTypeUp, IndigoButtonTargetHardware);
+  if (!downMessage || !upMessage) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:25
+                               userInfo:@{NSLocalizedDescriptionKey: @"Failed to create Indigo button event"}];
+    }
+    if (downMessage) free(downMessage);
+    if (upMessage) free(upMessage);
+    return NO;
+  }
+
+  if (!SendHIDMessage(context, downMessage, error)) {
+    if (upMessage) free(upMessage);
+    return NO;
+  }
+  return SendHIDMessage(context, upMessage, error);
+}
+
+static NSString *StringForFunctionKey(unichar functionKey) {
+  return [NSString stringWithCharacters:&functionKey length:1];
+}
+
+static BOOL ResolveSingleCharacterKey(NSString *key,
+                                      unsigned short *keyCodeOut,
+                                      NSEventModifierFlags *modifiersOut,
+                                      NSString **charactersOut,
+                                      NSString **charactersIgnoringModifiersOut) {
+  if (key.length != 1) return NO;
+  unichar c = [key characterAtIndex:0];
+  NSString *characters = key;
+  NSString *ignoring = key.lowercaseString;
+  NSEventModifierFlags modifiers = 0;
+  unsigned short keyCode = 0;
+
+  switch (c) {
+    case 'a': case 'A': keyCode = 0; break;
+    case 'b': case 'B': keyCode = 11; break;
+    case 'c': case 'C': keyCode = 8; break;
+    case 'd': case 'D': keyCode = 2; break;
+    case 'e': case 'E': keyCode = 14; break;
+    case 'f': case 'F': keyCode = 3; break;
+    case 'g': case 'G': keyCode = 5; break;
+    case 'h': case 'H': keyCode = 4; break;
+    case 'i': case 'I': keyCode = 34; break;
+    case 'j': case 'J': keyCode = 38; break;
+    case 'k': case 'K': keyCode = 40; break;
+    case 'l': case 'L': keyCode = 37; break;
+    case 'm': case 'M': keyCode = 46; break;
+    case 'n': case 'N': keyCode = 45; break;
+    case 'o': case 'O': keyCode = 31; break;
+    case 'p': case 'P': keyCode = 35; break;
+    case 'q': case 'Q': keyCode = 12; break;
+    case 'r': case 'R': keyCode = 15; break;
+    case 's': case 'S': keyCode = 1; break;
+    case 't': case 'T': keyCode = 17; break;
+    case 'u': case 'U': keyCode = 32; break;
+    case 'v': case 'V': keyCode = 9; break;
+    case 'w': case 'W': keyCode = 13; break;
+    case 'x': case 'X': keyCode = 7; break;
+    case 'y': case 'Y': keyCode = 16; break;
+    case 'z': case 'Z': keyCode = 6; break;
+    case '1': keyCode = 18; break;
+    case '!': keyCode = 18; modifiers = NSEventModifierFlagShift; ignoring = @"1"; break;
+    case '2': keyCode = 19; break;
+    case '@': keyCode = 19; modifiers = NSEventModifierFlagShift; ignoring = @"2"; break;
+    case '3': keyCode = 20; break;
+    case '#': keyCode = 20; modifiers = NSEventModifierFlagShift; ignoring = @"3"; break;
+    case '4': keyCode = 21; break;
+    case '$': keyCode = 21; modifiers = NSEventModifierFlagShift; ignoring = @"4"; break;
+    case '5': keyCode = 23; break;
+    case '%': keyCode = 23; modifiers = NSEventModifierFlagShift; ignoring = @"5"; break;
+    case '6': keyCode = 22; break;
+    case '^': keyCode = 22; modifiers = NSEventModifierFlagShift; ignoring = @"6"; break;
+    case '7': keyCode = 26; break;
+    case '&': keyCode = 26; modifiers = NSEventModifierFlagShift; ignoring = @"7"; break;
+    case '8': keyCode = 28; break;
+    case '*': keyCode = 28; modifiers = NSEventModifierFlagShift; ignoring = @"8"; break;
+    case '9': keyCode = 25; break;
+    case '(': keyCode = 25; modifiers = NSEventModifierFlagShift; ignoring = @"9"; break;
+    case '0': keyCode = 29; break;
+    case ')': keyCode = 29; modifiers = NSEventModifierFlagShift; ignoring = @"0"; break;
+    case '-': keyCode = 27; break;
+    case '_': keyCode = 27; modifiers = NSEventModifierFlagShift; ignoring = @"-"; break;
+    case '=': keyCode = 24; break;
+    case '+': keyCode = 24; modifiers = NSEventModifierFlagShift; ignoring = @"="; break;
+    case '[': keyCode = 33; break;
+    case '{': keyCode = 33; modifiers = NSEventModifierFlagShift; ignoring = @"["; break;
+    case ']': keyCode = 30; break;
+    case '}': keyCode = 30; modifiers = NSEventModifierFlagShift; ignoring = @"]"; break;
+    case '\\': keyCode = 42; break;
+    case '|': keyCode = 42; modifiers = NSEventModifierFlagShift; ignoring = @"\\"; break;
+    case ';': keyCode = 41; break;
+    case ':': keyCode = 41; modifiers = NSEventModifierFlagShift; ignoring = @";"; break;
+    case '\'': keyCode = 39; break;
+    case '"': keyCode = 39; modifiers = NSEventModifierFlagShift; ignoring = @"'"; break;
+    case '`': keyCode = 50; break;
+    case '~': keyCode = 50; modifiers = NSEventModifierFlagShift; ignoring = @"`"; break;
+    case ',': keyCode = 43; break;
+    case '<': keyCode = 43; modifiers = NSEventModifierFlagShift; ignoring = @","; break;
+    case '.': keyCode = 47; break;
+    case '>': keyCode = 47; modifiers = NSEventModifierFlagShift; ignoring = @"."; break;
+    case '/': keyCode = 44; break;
+    case '?': keyCode = 44; modifiers = NSEventModifierFlagShift; ignoring = @"/"; break;
+    case ' ': keyCode = 49; ignoring = @" "; break;
+    default:
+      return NO;
+  }
+
+  if ([[NSCharacterSet uppercaseLetterCharacterSet] characterIsMember:c]) {
+    modifiers |= NSEventModifierFlagShift;
+  }
+
+  if (keyCodeOut) *keyCodeOut = keyCode;
+  if (modifiersOut) *modifiersOut = modifiers;
+  if (charactersOut) *charactersOut = characters;
+  if (charactersIgnoringModifiersOut) *charactersIgnoringModifiersOut = ignoring;
+  return YES;
+}
+
+static BOOL ResolveKeyboardEventSpec(NSString *key,
+                                     unsigned short *keyCodeOut,
+                                     NSEventModifierFlags *modifiersOut,
+                                     NSString **charactersOut,
+                                     NSString **charactersIgnoringModifiersOut) {
+  if (ResolveSingleCharacterKey(key, keyCodeOut, modifiersOut, charactersOut, charactersIgnoringModifiersOut)) {
+    return YES;
+  }
+
+  struct NamedKeySpec {
+    __unsafe_unretained NSString *name;
+    unsigned short keyCode;
+    unichar functionKey;
+  };
+  static const struct NamedKeySpec namedKeys[] = {
+      {@"Enter", 36, '\r'},
+      {@"Tab", 48, '\t'},
+      {@"Escape", 53, 0x001b},
+      {@"Backspace", 51, 0x0008},
+      {@"Delete", 117, NSDeleteFunctionKey},
+      {@"ArrowLeft", 123, NSLeftArrowFunctionKey},
+      {@"ArrowRight", 124, NSRightArrowFunctionKey},
+      {@"ArrowDown", 125, NSDownArrowFunctionKey},
+      {@"ArrowUp", 126, NSUpArrowFunctionKey},
+      {@"Home", 115, NSHomeFunctionKey},
+      {@"End", 119, NSEndFunctionKey},
+      {@"PageUp", 116, NSPageUpFunctionKey},
+      {@"PageDown", 121, NSPageDownFunctionKey},
+      {@"Insert", 114, NSInsertFunctionKey},
+      {@"F1", 122, NSF1FunctionKey},
+      {@"F2", 120, NSF2FunctionKey},
+      {@"F3", 99, NSF3FunctionKey},
+      {@"F4", 118, NSF4FunctionKey},
+      {@"F5", 96, NSF5FunctionKey},
+      {@"F6", 97, NSF6FunctionKey},
+      {@"F7", 98, NSF7FunctionKey},
+      {@"F8", 100, NSF8FunctionKey},
+      {@"F9", 101, NSF9FunctionKey},
+      {@"F10", 109, NSF10FunctionKey},
+      {@"F11", 103, NSF11FunctionKey},
+      {@"F12", 111, NSF12FunctionKey},
+  };
+
+  for (size_t i = 0; i < sizeof(namedKeys) / sizeof(namedKeys[0]); i++) {
+    if (![key isEqualToString:namedKeys[i].name]) continue;
+    NSString *chars = StringForFunctionKey(namedKeys[i].functionKey);
+    if (keyCodeOut) *keyCodeOut = namedKeys[i].keyCode;
+    if (modifiersOut) *modifiersOut = 0;
+    if (charactersOut) *charactersOut = chars;
+    if (charactersIgnoringModifiersOut) *charactersIgnoringModifiersOut = chars;
+    return YES;
+  }
+
+  return NO;
+}
+
+static BOOL SendKeyboardShortPress(HIDContext *context, NSString *key, NSError **error) {
+  if (!context || !context->keyboardFn) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:26
+                               userInfo:@{NSLocalizedDescriptionKey: @"Keyboard HID is not initialized"}];
+    }
+    return NO;
+  }
+
+  unsigned short keyCode = 0;
+  NSEventModifierFlags modifiers = 0;
+  NSString *characters = nil;
+  NSString *charactersIgnoringModifiers = nil;
+  if (!ResolveKeyboardEventSpec(key, &keyCode, &modifiers, &characters, &charactersIgnoringModifiers)) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:27
+                               userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unsupported key '%@'", key ?: @""]}];
+    }
+    return NO;
+  }
+
+  NSEvent *downEvent = [NSEvent keyEventWithType:NSEventTypeKeyDown
+                                        location:NSZeroPoint
+                                   modifierFlags:modifiers
+                                       timestamp:0
+                                    windowNumber:0
+                                         context:nil
+                                      characters:characters
+                     charactersIgnoringModifiers:charactersIgnoringModifiers
+                                       isARepeat:NO
+                                         keyCode:keyCode];
+  NSEvent *upEvent = [NSEvent keyEventWithType:NSEventTypeKeyUp
+                                      location:NSZeroPoint
+                                 modifierFlags:modifiers
+                                     timestamp:0
+                                  windowNumber:0
+                                       context:nil
+                                    characters:characters
+                   charactersIgnoringModifiers:charactersIgnoringModifiers
+                                     isARepeat:NO
+                                       keyCode:keyCode];
+  IndigoMessage *downMessage = context->keyboardFn(downEvent);
+  IndigoMessage *upMessage = context->keyboardFn(upEvent);
+  if (!downMessage || !upMessage) {
+    if (error) {
+      *error = [NSError errorWithDomain:@"ios-sim-server"
+                                   code:28
+                               userInfo:@{NSLocalizedDescriptionKey: @"Failed to create Indigo keyboard event"}];
+    }
+    if (downMessage) free(downMessage);
+    if (upMessage) free(upMessage);
+    return NO;
+  }
+
+  if (!SendHIDMessage(context, downMessage, error)) {
+    if (upMessage) free(upMessage);
+    return NO;
+  }
+  return SendHIDMessage(context, upMessage, error);
+}
+
+static BOOL HandleControlPayload(NSData *payload, HIDContext *hidContext, NSError **error) {
   if (payload.length == 0) {
     return YES;
   }
@@ -365,13 +872,56 @@ static BOOL HandleControlPayload(NSData *payload, NSError **error) {
     return YES;
   }
 
-  if ([cmd isEqualToString:@"touch"] ||
-      [cmd isEqualToString:@"key"] ||
-      [cmd isEqualToString:@"button"]) {
-    // Capture-only daemon for now. Input plumbing is validated separately and
-    // will be wired in without changing the framing contract.
-    fprintf(stderr, "ios-sim-server: control command '%s' not implemented yet\n", cmd.UTF8String);
-    return YES;
+  if ([cmd isEqualToString:@"touch"]) {
+    NSArray *touches = json[@"touches"];
+    if (![touches isKindOfClass:[NSArray class]] || touches.count == 0) {
+      return YES;
+    }
+    NSDictionary *touch = touches.firstObject;
+    if (![touch isKindOfClass:[NSDictionary class]]) {
+      return YES;
+    }
+    NSNumber *x = touch[@"x"];
+    NSNumber *y = touch[@"y"];
+    NSNumber *pressure = touch[@"pressure"];
+    if (![x isKindOfClass:[NSNumber class]] || ![y isKindOfClass:[NSNumber class]]) {
+      return YES;
+    }
+    CGPoint point = CGPointMake(fmax(0.0, fmin(1.0, x.doubleValue)), fmax(0.0, fmin(1.0, y.doubleValue)));
+    IndigoButtonEventType direction =
+        (pressure != nil && pressure.doubleValue <= 0.0) ? IndigoButtonEventTypeUp : IndigoButtonEventTypeDown;
+    IndigoMessage *message = CreateTouchMessage(hidContext, point, direction);
+    if (!message) {
+      if (error) {
+        *error = [NSError errorWithDomain:@"ios-sim-server"
+                                     code:29
+                                 userInfo:@{NSLocalizedDescriptionKey: @"Failed to create Indigo touch event"}];
+      }
+      return NO;
+    }
+    return SendHIDMessage(hidContext, message, error);
+  }
+
+  if ([cmd isEqualToString:@"key"]) {
+    NSString *key = json[@"key"];
+    if (![key isKindOfClass:[NSString class]] || key.length == 0) {
+      return YES;
+    }
+    if ([key isEqualToString:@"GoHome"]) {
+      return SendButtonShortPress(hidContext, @"home", error);
+    }
+    return SendKeyboardShortPress(hidContext, key, error);
+  }
+
+  if ([cmd isEqualToString:@"button"]) {
+    NSString *button = json[@"button"];
+    if (![button isKindOfClass:[NSString class]] || button.length == 0) {
+      button = json[@"name"];
+    }
+    if (![button isKindOfClass:[NSString class]] || button.length == 0) {
+      return YES;
+    }
+    return SendButtonShortPress(hidContext, button, error);
   }
 
   return YES;
@@ -467,10 +1017,18 @@ static BOOL RunDaemonMode(NSString *udid) {
     return NO;
   }
 
+  HIDContext hidContext = {0};
+  NSError *hidError = nil;
+  if (!CreateHIDContext(device, &hidContext, &hidError)) {
+    fprintf(stderr, "Failed to create HID context: %s\n", DescribeObject(hidError).UTF8String);
+    return NO;
+  }
+
   int width = 0;
   int height = 0;
   IOSurfaceRef surface = CopyFramebufferSurface(device, &width, &height);
   if (surface == nil) {
+    DestroyHIDContext(&hidContext);
     fprintf(stderr, "Could not resolve framebufferSurface for device %s\n", udid.UTF8String);
     return NO;
   }
@@ -487,6 +1045,7 @@ static BOOL RunDaemonMode(NSString *udid) {
       &pixelBuffer);
   CFRelease(surface);
   if (cvStatus != kCVReturnSuccess || pixelBuffer == NULL) {
+    DestroyHIDContext(&hidContext);
     fprintf(stderr, "CVPixelBufferCreateWithIOSurface failed: %d\n", cvStatus);
     return NO;
   }
@@ -495,6 +1054,7 @@ static BOOL RunDaemonMode(NSString *udid) {
   JPEGEncoder encoder = {0};
   if (!CreateJPEGEncoder(width, height, &encoder, &encoderError)) {
     CVPixelBufferRelease(pixelBuffer);
+    DestroyHIDContext(&hidContext);
     fprintf(stderr, "JPEG encoder creation failed: %s\n", DescribeObject(encoderError).UTF8String);
     return NO;
   }
@@ -503,6 +1063,7 @@ static BOOL RunDaemonMode(NSString *udid) {
   if (!WriteHandshake(STDOUT_FILENO, width, height, &handshakeError)) {
     DestroyJPEGEncoder(&encoder);
     CVPixelBufferRelease(pixelBuffer);
+    DestroyHIDContext(&hidContext);
     fprintf(stderr, "Failed to write handshake: %s\n", DescribeObject(handshakeError).UTF8String);
     return NO;
   }
@@ -518,6 +1079,7 @@ static BOOL RunDaemonMode(NSString *udid) {
       fprintf(stderr, "Failed to read message type: %s\n", message.UTF8String);
       DestroyJPEGEncoder(&encoder);
       CVPixelBufferRelease(pixelBuffer);
+      DestroyHIDContext(&hidContext);
       return NO;
     }
 
@@ -529,6 +1091,7 @@ static BOOL RunDaemonMode(NSString *udid) {
           fprintf(stderr, "JPEG encode failed: %s\n", DescribeObject(encodeError).UTF8String);
           DestroyJPEGEncoder(&encoder);
           CVPixelBufferRelease(pixelBuffer);
+          DestroyHIDContext(&hidContext);
           return NO;
         }
         NSError *writeError = nil;
@@ -536,6 +1099,7 @@ static BOOL RunDaemonMode(NSString *udid) {
           fprintf(stderr, "Failed to write frame response: %s\n", DescribeObject(writeError).UTF8String);
           DestroyJPEGEncoder(&encoder);
           CVPixelBufferRelease(pixelBuffer);
+          DestroyHIDContext(&hidContext);
           return NO;
         }
         break;
@@ -546,10 +1110,11 @@ static BOOL RunDaemonMode(NSString *udid) {
           fprintf(stderr, "Failed to read control payload: %s\n", DescribeObject(readError).UTF8String);
           DestroyJPEGEncoder(&encoder);
           CVPixelBufferRelease(pixelBuffer);
+          DestroyHIDContext(&hidContext);
           return NO;
         }
         NSError *controlError = nil;
-        if (!HandleControlPayload(payload, &controlError)) {
+        if (!HandleControlPayload(payload, &hidContext, &controlError)) {
           fprintf(stderr, "Control command failed: %s\n", DescribeObject(controlError).UTF8String);
         }
         break;
@@ -558,12 +1123,14 @@ static BOOL RunDaemonMode(NSString *udid) {
         fprintf(stderr, "Unknown message type: 0x%02x\n", messageType);
         DestroyJPEGEncoder(&encoder);
         CVPixelBufferRelease(pixelBuffer);
+        DestroyHIDContext(&hidContext);
         return NO;
     }
   }
 
   DestroyJPEGEncoder(&encoder);
   CVPixelBufferRelease(pixelBuffer);
+  DestroyHIDContext(&hidContext);
   return YES;
 }
 

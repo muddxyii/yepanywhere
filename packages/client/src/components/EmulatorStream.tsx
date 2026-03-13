@@ -145,7 +145,11 @@ const KEY_BY_CODE: Readonly<Record<string, string>> = {
 };
 
 function supportsKeyboardInput(deviceType?: DeviceType): boolean {
-  return deviceType === "emulator" || deviceType === "android";
+  return (
+    deviceType === "emulator" ||
+    deviceType === "android" ||
+    deviceType === "ios-simulator"
+  );
 }
 
 export function mapKeyboardEventToAndroidKey(
@@ -215,7 +219,7 @@ export function mapKeyboardEventToDeviceKey(
   event: KeyboardEventLike,
   deviceType?: DeviceType,
 ): string | null {
-  if (deviceType === "emulator") {
+  if (deviceType === "emulator" || deviceType === "ios-simulator") {
     return mapKeyboardEventToEmulatorKey(event);
   }
   return mapKeyboardEventToAndroidKey(event);

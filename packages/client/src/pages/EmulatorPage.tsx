@@ -373,7 +373,7 @@ function StreamView({
         />
       </div>
 
-      <EmulatorNavButtons dataChannel={dataChannel} />
+      <EmulatorNavButtons dataChannel={dataChannel} deviceType={device.type} />
     </div>
   );
 }

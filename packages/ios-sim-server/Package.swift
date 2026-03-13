@@ -26,6 +26,7 @@ let package = Package(
                     "-Xlinker", "/Library/Developer/PrivateFrameworks",
                 ]),
                 .linkedFramework("Foundation"),
+                .linkedFramework("AppKit"),
                 .linkedFramework("CoreVideo"),
                 .linkedFramework("VideoToolbox"),
                 .linkedFramework("IOSurface"),

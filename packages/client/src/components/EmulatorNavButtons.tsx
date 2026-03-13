@@ -1,13 +1,24 @@
+import type { DeviceType } from "@yep-anywhere/shared";
+
 interface EmulatorNavButtonsProps {
   /** WebRTC DataChannel for sending key events */
   dataChannel: RTCDataChannel | null;
+  /** Device type for platform-specific controls */
+  deviceType?: DeviceType;
 }
 
 /**
  * Android navigation buttons (Back, Home, Recents).
  * Key events are sent via WebRTC DataChannel.
  */
-export function EmulatorNavButtons({ dataChannel }: EmulatorNavButtonsProps) {
+export function EmulatorNavButtons({
+  dataChannel,
+  deviceType,
+}: EmulatorNavButtonsProps) {
+  if (deviceType !== "emulator" && deviceType !== "android") {
+    return null;
+  }
+
   const sendKey = (key: string) => {
     if (!dataChannel || dataChannel.readyState !== "open") return;
     dataChannel.send(JSON.stringify({ type: "key", key }));

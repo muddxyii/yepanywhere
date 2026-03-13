@@ -82,6 +82,15 @@ describe("mapKeyboardEventToDeviceKey", () => {
       mapKeyboardEventToDeviceKey(makeEvent({ key: "ArrowLeft" }), "emulator"),
     ).toBe("ArrowLeft");
   });
+
+  it("uses emulator-style key semantics for ios simulator device type", () => {
+    expect(
+      mapKeyboardEventToDeviceKey(makeEvent({ key: "A" }), "ios-simulator"),
+    ).toBe("A");
+    expect(
+      mapKeyboardEventToDeviceKey(makeEvent({ key: "Enter" }), "ios-simulator"),
+    ).toBe("Enter");
+  });
 });
 
 describe("mapKeyboardEventToEmulatorKey", () => {
