@@ -20,6 +20,10 @@ interface BulkActionBarProps {
   canMarkRead?: boolean;
   /** True if any selected item can be marked as unread (is read) */
   canMarkUnread?: boolean;
+  /** Archive all filtered sessions (shown when filters active, no selection) */
+  onArchiveAllFiltered?: () => Promise<void>;
+  /** Number of archivable sessions in filtered results */
+  archivableFilteredCount?: number;
 }
 
 /**
@@ -42,9 +46,45 @@ export function BulkActionBar({
   canUnstar = true,
   canMarkRead = true,
   canMarkUnread = true,
+  onArchiveAllFiltered,
+  archivableFilteredCount = 0,
 }: BulkActionBarProps) {
+  // Show "Archive all N" bar when filters are active but no manual selection
   if (selectedCount === 0) {
-    return null;
+    if (!onArchiveAllFiltered || archivableFilteredCount === 0) {
+      return null;
+    }
+
+    return (
+      <div className="bulk-action-bar">
+        <div className="bulk-action-bar__actions">
+          <button
+            type="button"
+            className="bulk-action-button bulk-action-button--primary"
+            onClick={onArchiveAllFiltered}
+            disabled={isPending}
+            title={`Archive all ${archivableFilteredCount} filtered sessions`}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="21 8 21 21 3 21 3 8" />
+              <rect x="1" y="3" width="22" height="5" />
+              <line x1="10" y1="12" x2="14" y2="12" />
+            </svg>
+            <span>Archive all {archivableFilteredCount}</span>
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

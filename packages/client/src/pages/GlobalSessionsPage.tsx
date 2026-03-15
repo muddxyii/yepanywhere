@@ -21,6 +21,9 @@ const LONG_PRESS_MS = 500;
 // Status filter options
 type StatusFilter = "all" | "unread" | "starred" | "archived";
 
+// Age filter options (days)
+type AgeFilter = "3" | "7" | "14" | "30";
+
 // Provider colors for filter dropdown (matching ProviderBadge)
 const PROVIDER_COLORS: Record<ProviderName, string> = {
   claude: "var(--app-yep-green)",
@@ -76,6 +79,13 @@ export function GlobalSessionsPage() {
     return param.split(",").filter(Boolean);
   }, [searchParams]);
 
+  const ageFilter = useMemo(() => {
+    const param = searchParams.get("age");
+    if (param && ["3", "7", "14", "30"].includes(param))
+      return param as AgeFilter;
+    return undefined;
+  }, [searchParams]);
+
   const setStatusFilters = useCallback(
     (filters: StatusFilter[]) => {
       setSearchParams((prev) => {
@@ -114,6 +124,21 @@ export function GlobalSessionsPage() {
           next.set("executor", filters.join(","));
         } else {
           next.delete("executor");
+        }
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
+
+  const setAgeFilter = useCallback(
+    (selected: AgeFilter[]) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (selected.length > 0 && selected[0]) {
+          next.set("age", selected[0]);
+        } else {
+          next.delete("age");
         }
         return next;
       });
@@ -177,9 +202,18 @@ export function GlobalSessionsPage() {
         }
       }
 
+      // Age filtering (only show sessions older than N days)
+      if (ageFilter) {
+        const days = Number(ageFilter);
+        const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+        if (new Date(session.updatedAt).getTime() > cutoff) {
+          return false;
+        }
+      }
+
       return true;
     });
-  }, [sessions, statusFilters, providerFilters, executorFilters]);
+  }, [sessions, statusFilters, providerFilters, executorFilters, ageFilter]);
 
   // Track which sessions have unsent drafts
   const drafts = useDrafts();
@@ -235,6 +269,16 @@ export function GlobalSessionsPage() {
     }
     return options;
   }, [stats.providerCounts, projectFilter]);
+
+  // Age filter options
+  const ageOptions = useMemo((): FilterOption<AgeFilter>[] => {
+    return [
+      { value: "3", label: "Older than 3 days" },
+      { value: "7", label: "Older than 7 days" },
+      { value: "14", label: "Older than 14 days" },
+      { value: "30", label: "Older than 30 days" },
+    ];
+  }, []);
 
   // Build executor filter options with global counts from server
   const executorOptions = useMemo((): FilterOption<string>[] => {
@@ -449,6 +493,29 @@ export function GlobalSessionsPage() {
     }
   }, [selectedIds, isBulkActionPending, handleClearSelection]);
 
+  // "Archive all" for filtered results (no manual selection needed)
+  const handleArchiveAllFiltered = useCallback(async () => {
+    if (isBulkActionPending) return;
+    const archivable = filteredSessions.filter((s) => !s.isArchived);
+    if (archivable.length === 0) return;
+    setIsBulkActionPending(true);
+    try {
+      await Promise.all(
+        archivable.map((s) =>
+          api.updateSessionMetadata(s.id, { archived: true }),
+        ),
+      );
+    } finally {
+      setIsBulkActionPending(false);
+    }
+  }, [filteredSessions, isBulkActionPending]);
+
+  // Count of archivable sessions in filtered results
+  const archivableFilteredCount = useMemo(
+    () => filteredSessions.filter((s) => !s.isArchived).length,
+    [filteredSessions],
+  );
+
   // Compute which bulk actions are applicable based on selection
   const bulkActionState = useMemo(() => {
     const selectedSessions = sessions.filter((s) => selectedIds.has(s.id));
@@ -508,7 +575,8 @@ export function GlobalSessionsPage() {
     projectFilter ||
     statusFilters.length > 0 ||
     providerFilters.length > 0 ||
-    executorFilters.length > 0;
+    executorFilters.length > 0 ||
+    ageFilter;
 
   return (
     <div
@@ -594,6 +662,14 @@ export function GlobalSessionsPage() {
                     placeholder="All machines"
                   />
                 )}
+                <FilterDropdown
+                  label="Age"
+                  options={ageOptions}
+                  selected={ageFilter ? [ageFilter] : []}
+                  onChange={setAgeFilter}
+                  multiSelect={false}
+                  placeholder="Any age"
+                />
               </div>
               {hasFilters && (
                 <button
@@ -757,6 +833,10 @@ export function GlobalSessionsPage() {
               canUnstar={bulkActionState.canUnstar}
               canMarkRead={bulkActionState.canMarkRead}
               canMarkUnread={bulkActionState.canMarkUnread}
+              onArchiveAllFiltered={
+                hasFilters ? handleArchiveAllFiltered : undefined
+              }
+              archivableFilteredCount={archivableFilteredCount}
             />
           </div>
         </main>

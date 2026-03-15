@@ -56,7 +56,12 @@ export function FilterDropdown<T extends string>({
         onChange([...selected, value]);
       }
     } else {
-      onChange([value]);
+      // Single-select: toggle off if already selected, otherwise select
+      if (selected.includes(value)) {
+        onChange([]);
+      } else {
+        onChange([value]);
+      }
       setIsOpen(false);
     }
   };

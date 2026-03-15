@@ -4378,6 +4378,19 @@ a.sidebar-nav-item {
   cursor: not-allowed;
 }
 
+.bulk-action-button--primary {
+  background: var(--app-yep-green);
+  color: var(--bg-primary);
+  border-color: var(--app-yep-green);
+  font-weight: 600;
+}
+
+.bulk-action-button--primary:hover:not(:disabled) {
+  background: var(--app-yep-green);
+  border-color: var(--app-yep-green);
+  opacity: 0.9;
+}
+
 /* Stack icon and text vertically on mobile */
 @media (max-width: 768px) {
   .bulk-action-bar__actions {
