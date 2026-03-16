@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToolApprovalFeedbackDraft } from "../hooks/useDrafts";
 import type { InputRequest } from "../types";
+import { toolRegistry } from "./renderers/tools";
+import type { RenderContext } from "./renderers/types";
 import { getToolSummary } from "./tools/summaries";
+import { Modal } from "./ui/Modal";
 
 // Tools that can be auto-approved with "accept edits" mode
 const EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
@@ -186,6 +189,17 @@ export function ToolApprovalPanel({
     ? getToolSummary(request.toolName, request.toolInput, undefined, "pending")
     : request.prompt;
 
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+
+  const renderContext: RenderContext = useMemo(
+    () => ({
+      isStreaming: true,
+      theme: "dark",
+      toolUseId: request.id,
+    }),
+    [request.id],
+  );
+
   return (
     <div className="tool-approval-wrapper">
       {/* Floating toggle button */}
@@ -225,11 +239,38 @@ export function ToolApprovalPanel({
                 </span>
               </>
             ) : (
-              <span className="tool-approval-question">
-                Allow{" "}
-                <span className="tool-approval-name">{request.toolName}</span>{" "}
-                {summary}?
-              </span>
+              <>
+                <div className="tool-approval-question-row">
+                  <span className="tool-approval-question">
+                    Allow{" "}
+                    <span className="tool-approval-name">
+                      {request.toolName}
+                    </span>{" "}
+                    {summary}?
+                  </span>
+                  <button
+                    type="button"
+                    className="tool-approval-view-details"
+                    onClick={() => setShowPreviewModal(true)}
+                  >
+                    View details
+                  </button>
+                </div>
+                {showPreviewModal && request.toolName && (
+                  <Modal
+                    title={`${request.toolName} details`}
+                    onClose={() => setShowPreviewModal(false)}
+                  >
+                    <div className="tool-use-expanded">
+                      {toolRegistry.renderToolUse(
+                        request.toolName,
+                        request.toolInput,
+                        renderContext,
+                      )}
+                    </div>
+                  </Modal>
+                )}
+              </>
             )}
           </div>
 

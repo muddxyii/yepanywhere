@@ -11,6 +11,7 @@ import { Modal } from "../../ui/Modal";
 import type { BashInput, BashResult, ToolRenderer } from "./types";
 
 const MAX_LINES_COLLAPSED = 20;
+const MAX_LINES_TOOL_USE = 12;
 const DEFAULT_PREVIEW_LINES = 4;
 const DEFAULT_PREVIEW_MAX_CHARS = 400; // 4 * 100 chars
 const CODEX_PREVIEW_LINES = 2;
@@ -162,15 +163,32 @@ function BashModalContent({
 }
 
 /**
- * Bash tool use - shows command in code block
+ * Bash tool use - shows command in code block with collapse for long commands
  */
 function BashToolUse({ input }: { input: BashInput }) {
   const command = getBashCommand(input);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const lines = command.split("\n");
+  const needsCollapse = lines.length > MAX_LINES_TOOL_USE;
+  const displayCommand =
+    needsCollapse && !isExpanded
+      ? `${lines.slice(0, MAX_LINES_TOOL_USE).join("\n")}\n...`
+      : command;
+
   return (
     <div className="bash-tool-use">
       <pre className="code-block">
-        <code>{command}</code>
+        <code>{displayCommand}</code>
       </pre>
+      {needsCollapse && (
+        <button
+          type="button"
+          className="expand-button"
+          onClick={() => setIsExpanded(!isExpanded)}
+        >
+          {isExpanded ? "Show less" : `Show all ${lines.length} lines`}
+        </button>
+      )}
     </div>
   );
 }
@@ -420,13 +438,22 @@ export const bashRenderer: ToolRenderer<BashInput, BashResult> = {
   getUseSummary(input) {
     const i = input as BashInput;
     const command = getBashCommand(i);
-    // Show description if available, otherwise full command.
-    // Row-level truncation is handled by CSS (.tool-summary text-overflow).
+    // Show description if available, otherwise truncated command.
+    // Row-level truncation is handled by CSS (.tool-summary text-overflow),
+    // but we also truncate here to avoid massive strings in the approval panel.
     if (i.description) {
       return i.description;
     }
     if (!command) {
       return "Bash command";
+    }
+    // Truncate long commands (e.g., heredocs) - first line only, max 200 chars
+    const firstLine = command.split("\n")[0] ?? command;
+    if (firstLine.length > 200) {
+      return `${firstLine.slice(0, 200)}...`;
+    }
+    if (command.includes("\n")) {
+      return `${firstLine}...`;
     }
     return command;
   },
