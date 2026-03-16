@@ -191,6 +191,19 @@ export function ToolApprovalPanel({
 
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
+  // Only show "View details" when the tool input is large enough to warrant a modal
+  const hasLargeInput = useMemo(() => {
+    if (!request.toolInput || typeof request.toolInput !== "object")
+      return false;
+    const input = request.toolInput as Record<string, unknown>;
+    // Check total string content size across all values
+    let totalSize = 0;
+    for (const value of Object.values(input)) {
+      if (typeof value === "string") totalSize += value.length;
+    }
+    return totalSize > 200;
+  }, [request.toolInput]);
+
   const renderContext: RenderContext = useMemo(
     () => ({
       isStreaming: true,
@@ -248,13 +261,15 @@ export function ToolApprovalPanel({
                     </span>{" "}
                     {summary}?
                   </span>
-                  <button
-                    type="button"
-                    className="tool-approval-view-details"
-                    onClick={() => setShowPreviewModal(true)}
-                  >
-                    View details
-                  </button>
+                  {hasLargeInput && (
+                    <button
+                      type="button"
+                      className="tool-approval-view-details"
+                      onClick={() => setShowPreviewModal(true)}
+                    >
+                      View details
+                    </button>
+                  )}
                 </div>
                 {showPreviewModal && request.toolName && (
                   <Modal
