@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { GlobalSessionItem } from "../api/client";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useDrafts } from "../hooks/useDrafts";
@@ -8,7 +8,7 @@ import { useNeedsAttentionBadge } from "../hooks/useNeedsAttentionBadge";
 import { useRecentProjects } from "../hooks/useRecentProjects";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useVersion } from "../hooks/useVersion";
-import { getSessionDisplayTitle, toUrlProjectId } from "../utils";
+import { getSessionDisplayTitle } from "../utils";
 import { AgentsNavItem } from "./AgentsNavItem";
 import { SessionListItem } from "./SessionListItem";
 import {
@@ -22,6 +22,35 @@ const SWIPE_THRESHOLD = 50; // Minimum distance to trigger close
 const SWIPE_ENGAGE_THRESHOLD = 15; // Minimum horizontal distance before swipe engages
 const RECENT_SESSIONS_INITIAL = 12; // Initial number of recent sessions to show
 const RECENT_SESSIONS_INCREMENT = 10; // How many more to show on each expand
+const COLLAPSED_PROJECTS_KEY = "sidebar-collapsed-projects";
+
+interface ProjectGroup {
+  projectName: string;
+  sessions: GlobalSessionItem[];
+}
+
+/** Group sessions by projectName, sorted by most recent session in each group */
+function groupByProject(sessions: GlobalSessionItem[]): ProjectGroup[] {
+  const map = new Map<string, GlobalSessionItem[]>();
+  for (const s of sessions) {
+    const name = s.projectName || "Unknown";
+    const list = map.get(name);
+    if (list) list.push(s);
+    else map.set(name, [s]);
+  }
+  return Array.from(map.entries())
+    .map(([projectName, items]) => ({ projectName, sessions: items }))
+    .sort((a, b) => a.projectName.localeCompare(b.projectName));
+}
+
+function loadCollapsedProjects(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_PROJECTS_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
 interface SidebarProps {
   isOpen: boolean;
@@ -97,12 +126,6 @@ export function Sidebar({
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartX = useRef<number | null>(null);
   const resizeStartWidth = useRef<number | null>(null);
-  const [recentSessionsLimit, setRecentSessionsLimit] = useState(
-    RECENT_SESSIONS_INITIAL,
-  );
-  const [olderSessionsLimit, setOlderSessionsLimit] = useState(
-    RECENT_SESSIONS_INITIAL,
-  );
   const [starredSessionsLimit, setStarredSessionsLimit] = useState(
     RECENT_SESSIONS_INITIAL,
   );
@@ -232,6 +255,31 @@ export function Sidebar({
         isOlderThanOneDay(new Date(s.updatedAt)),
     );
   }, [globalSessions]);
+
+  // Collapsed project groups (persisted to localStorage)
+  const [collapsedProjects, setCollapsedProjects] = useState(
+    loadCollapsedProjects,
+  );
+
+  const toggleProjectCollapsed = useCallback((projectName: string) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectName)) next.delete(projectName);
+      else next.add(projectName);
+      localStorage.setItem(COLLAPSED_PROJECTS_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }, []);
+
+  // Group recent and older sessions by project
+  const recentProjectGroups = useMemo(
+    () => groupByProject(recentDaySessions),
+    [recentDaySessions],
+  );
+  const olderProjectGroups = useMemo(
+    () => groupByProject(olderSessions),
+    [olderSessions],
+  );
 
   // Track which sessions have unsent drafts in localStorage
   const drafts = useDrafts();
@@ -478,105 +526,141 @@ export function Sidebar({
             </div>
           )}
 
-          {recentDaySessions.length > 0 && (
+          {recentProjectGroups.length > 0 && (
             <div className="sidebar-section">
               <h3 className="sidebar-section-title">Last 24 Hours</h3>
-              <ul className="sidebar-session-list">
-                {recentDaySessions
-                  .slice(0, recentSessionsLimit)
-                  .map((session) => (
-                    <SessionListItem
-                      key={session.id}
-                      sessionId={session.id}
-                      projectId={session.projectId}
-                      title={getSessionDisplayTitle(session)}
-                      fullTitle={getSessionDisplayTitle(session)}
-                      provider={session.provider}
-                      status={session.ownership}
-                      pendingInputType={session.pendingInputType}
-                      hasUnread={session.hasUnread}
-                      isStarred={session.isStarred}
-                      isArchived={session.isArchived}
-                      mode="compact"
-                      isCurrent={session.id === currentSessionId}
-                      activity={session.activity}
-                      onNavigate={onNavigate}
-                      showProjectName
-                      projectName={session.projectName}
-                      basePath={basePath}
-                      messageCount={session.messageCount}
-                      hasDraft={drafts.has(session.id)}
-                    />
-                  ))}
-              </ul>
-              {recentDaySessions.length > recentSessionsLimit && (
-                <button
-                  type="button"
-                  className="sidebar-show-more"
-                  onClick={() =>
-                    setRecentSessionsLimit(
-                      (prev) => prev + RECENT_SESSIONS_INCREMENT,
-                    )
-                  }
-                >
-                  Show{" "}
-                  {Math.min(
-                    RECENT_SESSIONS_INCREMENT,
-                    recentDaySessions.length - recentSessionsLimit,
-                  )}{" "}
-                  more
-                </button>
-              )}
+              {recentProjectGroups.map((group) => {
+                const isCollapsed = collapsedProjects.has(group.projectName);
+                return (
+                  <div
+                    key={group.projectName}
+                    className="sidebar-project-group"
+                  >
+                    <button
+                      type="button"
+                      className="sidebar-project-header"
+                      onClick={() => toggleProjectCollapsed(group.projectName)}
+                      aria-expanded={!isCollapsed}
+                    >
+                      <svg
+                        className={`sidebar-project-chevron ${isCollapsed ? "collapsed" : ""}`}
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                      <span className="sidebar-project-name">
+                        {group.projectName}
+                      </span>
+                      <span className="sidebar-project-count">
+                        {group.sessions.length}
+                      </span>
+                    </button>
+                    {!isCollapsed && (
+                      <ul className="sidebar-session-list">
+                        {group.sessions.map((session) => (
+                          <SessionListItem
+                            key={session.id}
+                            sessionId={session.id}
+                            projectId={session.projectId}
+                            title={getSessionDisplayTitle(session)}
+                            fullTitle={getSessionDisplayTitle(session)}
+                            provider={session.provider}
+                            status={session.ownership}
+                            pendingInputType={session.pendingInputType}
+                            hasUnread={session.hasUnread}
+                            isStarred={session.isStarred}
+                            isArchived={session.isArchived}
+                            mode="compact"
+                            isCurrent={session.id === currentSessionId}
+                            activity={session.activity}
+                            onNavigate={onNavigate}
+                            basePath={basePath}
+                            messageCount={session.messageCount}
+                            hasDraft={drafts.has(session.id)}
+                          />
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
-          {olderSessions.length > 0 && (
+          {olderProjectGroups.length > 0 && (
             <div className="sidebar-section">
               <h3 className="sidebar-section-title">Older</h3>
-              <ul className="sidebar-session-list">
-                {olderSessions.slice(0, olderSessionsLimit).map((session) => (
-                  <SessionListItem
-                    key={session.id}
-                    sessionId={session.id}
-                    projectId={session.projectId}
-                    title={getSessionDisplayTitle(session)}
-                    fullTitle={getSessionDisplayTitle(session)}
-                    provider={session.provider}
-                    status={session.ownership}
-                    pendingInputType={session.pendingInputType}
-                    hasUnread={session.hasUnread}
-                    isStarred={session.isStarred}
-                    isArchived={session.isArchived}
-                    mode="compact"
-                    isCurrent={session.id === currentSessionId}
-                    activity={session.activity}
-                    onNavigate={onNavigate}
-                    showProjectName
-                    projectName={session.projectName}
-                    basePath={basePath}
-                    messageCount={session.messageCount}
-                    hasDraft={drafts.has(session.id)}
-                  />
-                ))}
-              </ul>
-              {olderSessions.length > olderSessionsLimit && (
-                <button
-                  type="button"
-                  className="sidebar-show-more"
-                  onClick={() =>
-                    setOlderSessionsLimit(
-                      (prev) => prev + RECENT_SESSIONS_INCREMENT,
-                    )
-                  }
-                >
-                  Show{" "}
-                  {Math.min(
-                    RECENT_SESSIONS_INCREMENT,
-                    olderSessions.length - olderSessionsLimit,
-                  )}{" "}
-                  more
-                </button>
-              )}
+              {olderProjectGroups.map((group) => {
+                const isCollapsed = collapsedProjects.has(group.projectName);
+                return (
+                  <div
+                    key={group.projectName}
+                    className="sidebar-project-group"
+                  >
+                    <button
+                      type="button"
+                      className="sidebar-project-header"
+                      onClick={() => toggleProjectCollapsed(group.projectName)}
+                      aria-expanded={!isCollapsed}
+                    >
+                      <svg
+                        className={`sidebar-project-chevron ${isCollapsed ? "collapsed" : ""}`}
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                      <span className="sidebar-project-name">
+                        {group.projectName}
+                      </span>
+                      <span className="sidebar-project-count">
+                        {group.sessions.length}
+                      </span>
+                    </button>
+                    {!isCollapsed && (
+                      <ul className="sidebar-session-list">
+                        {group.sessions.map((session) => (
+                          <SessionListItem
+                            key={session.id}
+                            sessionId={session.id}
+                            projectId={session.projectId}
+                            title={getSessionDisplayTitle(session)}
+                            fullTitle={getSessionDisplayTitle(session)}
+                            provider={session.provider}
+                            status={session.ownership}
+                            pendingInputType={session.pendingInputType}
+                            hasUnread={session.hasUnread}
+                            isStarred={session.isStarred}
+                            isArchived={session.isArchived}
+                            mode="compact"
+                            isCurrent={session.id === currentSessionId}
+                            activity={session.activity}
+                            onNavigate={onNavigate}
+                            basePath={basePath}
+                            messageCount={session.messageCount}
+                            hasDraft={drafts.has(session.id)}
+                          />
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
